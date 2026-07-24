@@ -460,7 +460,14 @@ def compare_three_way(
     """
     Run Hybrid (always) + optional Classical FiLM + Dijkstra under the same
     start / exit / epicenter. Travel times are honest path sums — never forged.
+
+    Also records wall-clock inference / path latency (ms) per engine for the
+    demo metrics panel. Hybrid on ``default.qubit`` is slower; a real QPU is
+    the roadmap for accelerating the quantum branch.
     """
+    import time as _time
+
+    t0 = _time.perf_counter()
     h_path, h_radii, h_env, h_travel, sample_x, h_meta = predict_escape_route(
         G,
         hybrid_model,
@@ -471,10 +478,13 @@ def compare_three_way(
         epicenter_lonlat,
         max_steps=max_steps,
     )
+    hybrid_ms = (_time.perf_counter() - t0) * 1000.0
     q_contrib = estimate_quantum_contribution_pct(hybrid_model, sample_x)
 
     classical_summary = None
+    classical_ms = None
     if include_classical and classical_model is not None:
+        t0 = _time.perf_counter()
         c_path, _c_r, _c_e, c_travel, _c_x, c_meta = predict_escape_route(
             G,
             classical_model,
@@ -485,27 +495,33 @@ def compare_three_way(
             epicenter_lonlat,
             max_steps=max_steps,
         )
+        classical_ms = (_time.perf_counter() - t0) * 1000.0
         classical_summary = {
             "engine": "Classical FiLM (ablation)",
             "path": c_path,
             "travel_time": float(c_travel),
             "exit_reached": bool(c_meta.get("reached")),
             "hops": int(c_meta.get("hops", max(0, len(c_path) - 1))),
+            "latency_ms": float(round(classical_ms, 1)),
             "meta": c_meta,
         }
 
     dijkstra_summary = None
     d_path = None
+    dijkstra_ms = None
     if include_dijkstra:
+        t0 = _time.perf_counter()
         d_path, _d_r, _d_e, d_travel, d_meta = dijkstra_escape_route(
             G, start, dest, epicenter_lonlat
         )
+        dijkstra_ms = (_time.perf_counter() - t0) * 1000.0
         dijkstra_summary = {
             "engine": "Dijkstra (full dynamic weights)",
             "path": d_path,
             "travel_time": float(d_travel),
             "exit_reached": bool(d_meta.get("reached")),
             "hops": int(d_meta.get("hops", max(0, len(d_path) - 1))),
+            "latency_ms": float(round(dijkstra_ms, 1)),
             "meta": d_meta,
         }
 
@@ -523,6 +539,7 @@ def compare_three_way(
         "hops": int(h_meta.get("hops", max(0, len(h_path) - 1))),
         "overlap_vs_dijkstra_pct": float(h_overlap) if h_overlap is not None else None,
         "quantum_contribution": float(round(q_contrib, 1)),
+        "latency_ms": float(round(hybrid_ms, 1)),
         "meta": h_meta,
         "radii_trace": h_radii,
         "sample_x": sample_x,
@@ -538,6 +555,7 @@ def compare_three_way(
         "hybrid_near_dijkstra": None,
         "hybrid_vs_classical_time_ratio": None,
         "hybrid_vs_dijkstra_time_ratio": None,
+        "paths_diverge": None,
     }
     if classical_summary is not None and hybrid_summary["exit_reached"]:
         ct = classical_summary["travel_time"]
@@ -553,6 +571,9 @@ def compare_three_way(
                     and ht <= ct * 1.08
                 )
             )
+        narrative["paths_diverge"] = bool(
+            list(h_path) != list(classical_summary["path"])
+        )
     if dijkstra_summary is not None and hybrid_summary["exit_reached"]:
         dt = dijkstra_summary["travel_time"]
         ht = hybrid_summary["travel_time"]
@@ -560,11 +581,22 @@ def compare_three_way(
             narrative["hybrid_vs_dijkstra_time_ratio"] = float(ht / dt)
             narrative["hybrid_near_dijkstra"] = bool(ht <= dt * 1.25)
 
+    latency_ms = {
+        "hybrid": float(round(hybrid_ms, 1)),
+        "classical": (
+            float(round(classical_ms, 1)) if classical_ms is not None else None
+        ),
+        "dijkstra": (
+            float(round(dijkstra_ms, 1)) if dijkstra_ms is not None else None
+        ),
+    }
+
     return {
         "hybrid": hybrid_summary,
         "classical": classical_summary,
         "dijkstra": dijkstra_summary,
         "narrative": narrative,
+        "latency_ms": latency_ms,
     }
 
 

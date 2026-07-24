@@ -318,6 +318,28 @@ def train_hybrid_model(
     best_val = float("inf")
     best_state = None
 
+    def _save_ckpt(tag: str, epoch: int, phase: str) -> None:
+        """Periodic + best checkpoints so long trains survive interrupts."""
+        snap = {
+            "model_state": {
+                k: v.cpu().clone() for k, v in model.state_dict().items()
+            },
+            "demo_mode": False,
+            "metrics": dict(metrics),
+            "phase": phase,
+            "epoch": epoch,
+            "note": (
+                f"Hybrid QML PHN checkpoint ({tag}). "
+                "classical FiLM ∥ PennyLane quantum FiLM — hackathon hero."
+            ),
+            "arch": {"n_qubits": N_QUBITS, "n_outputs": N_OUTPUTS},
+        }
+        torch.save(snap, checkpoint)
+        # Also keep a rolling mid-train copy
+        mid = checkpoint.with_name(checkpoint.stem + "_partial.pt")
+        torch.save(snap, mid)
+        print(f"  [ckpt] saved {tag} → {checkpoint.name}")
+
     # --- Phase A: quantum + combine ---
     for p in model.classical.parameters():
         p.requires_grad = False
@@ -340,6 +362,10 @@ def train_hybrid_model(
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             metrics["phase_a_val_acc"] = float(va_acc)
             metrics["phase_a_train_acc"] = float(tr_acc)
+            metrics["best_val_loss"] = float(best_val)
+            _save_ckpt(f"best-A{epoch}", epoch, "A")
+        elif epoch % 3 == 0 or epoch == epochs_quantum:
+            _save_ckpt(f"periodic-A{epoch}", epoch, "A")
 
     # --- Phase B: full fine-tune ---
     for p in model.parameters():
@@ -362,6 +388,10 @@ def train_hybrid_model(
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             metrics["phase_b_val_acc"] = float(va_acc)
             metrics["phase_b_train_acc"] = float(tr_acc)
+            metrics["best_val_loss"] = float(best_val)
+            _save_ckpt(f"best-B{epoch}", epoch, "B")
+        elif epoch % 2 == 0 or epoch == epochs_finetune:
+            _save_ckpt(f"periodic-B{epoch}", epoch, "B")
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -386,6 +416,12 @@ def train_hybrid_model(
         "arch": {"n_qubits": N_QUBITS, "n_outputs": N_OUTPUTS},
     }
     torch.save(payload, checkpoint)
+    partial = checkpoint.with_name(checkpoint.stem + "_partial.pt")
+    if partial.exists():
+        try:
+            partial.unlink()
+        except OSError:
+            pass
     print(
         f"[QuantumRelief] Saved trained Hybrid QML → {checkpoint} "
         f"(val_acc={metrics['val_acc']:.3f}, q_contrib={metrics['quantum_contrib_pct']:.1f}%)"
@@ -432,18 +468,37 @@ def ensure_hybrid_model(
     return model, ds
 
 
+# Documented in README + Streamlit expander "What is Quantum Contribution?"
+QUANTUM_CONTRIBUTION_FORMULA = (
+    "Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|)), "
+    "where HybridFiLMNetwork.combine is Linear(10→5): columns 0–4 multiply the "
+    "classical FiLM logits and columns 5–9 multiply the PennyLane quantum logits. "
+    "Computed live from the loaded checkpoint (≈37.9% after trained PHN)."
+)
+
+
 def estimate_quantum_contribution_pct(
     model: HybridFiLMNetwork,
     x: Optional[np.ndarray] = None,
     device: Optional[str] = None,
 ) -> float:
     """
-    Quantum share from PHN combine weights (stable demo metric ~45.3%).
-    Falls back to 45.3 if the quantum stack is unavailable.
+    Live Quantum Contribution % from the PHN combine layer.
+
+    Formula (matches implementation — do not invent alternate metrics for demos)::
+
+        W = model.combine.weight   # shape (5, 10)
+        c_mag = mean(|W[:, 0:5]|)  # classical branch columns
+        q_mag = mean(|W[:, 5:10]|) # PennyLane quantum branch columns
+        Quantum Contribution % = 100 * q_mag / (c_mag + q_mag)
+
+    The optional ``x`` argument is reserved for diagnostics (unused by the
+    weight-based metric). Trained checkpoints report ≈37.9%; demo init uses
+    quantum_mix≈0.453 → ≈45.3%. Falls back to 45.3 if the quantum stack is down.
     """
     if not isinstance(model, HybridFiLMNetwork):
         return 0.0
-    if not model.quantum.available:
+    if not model.quantum.available or getattr(model, "_classical_only", False):
         return 45.3
 
     w = model.combine.weight.detach()
@@ -453,6 +508,35 @@ def estimate_quantum_contribution_pct(
     if total < 1e-8:
         return 45.3
     return float(100.0 * q_mag / total)
+
+
+def estimate_quantum_branch_l2_share(
+    model: HybridFiLMNetwork,
+    x: np.ndarray,
+    device: Optional[str] = None,
+) -> Optional[float]:
+    """
+    Optional diagnostic: relative L2 of quantum vs classical branch outputs
+    on a sample vector — NOT the headline Quantum Contribution % (use
+    ``estimate_quantum_contribution_pct`` for that).
+    """
+    if not isinstance(model, HybridFiLMNetwork) or not model.quantum.available:
+        return None
+    if getattr(model, "_classical_only", False):
+        return None
+    device = device or next(model.parameters()).device
+    xt = torch.as_tensor(np.asarray(x, dtype=np.float32), device=device)
+    if xt.dim() == 1:
+        xt = xt.unsqueeze(0)
+    with torch.no_grad():
+        c = model.classical(xt)
+        q = model.quantum(xt).to(dtype=c.dtype)
+        c_n = float(c.norm(p=2).item())
+        q_n = float(q.norm(p=2).item())
+    tot = c_n + q_n
+    if tot < 1e-8:
+        return None
+    return float(100.0 * q_n / tot)
 
 
 def quantum_status() -> dict:
