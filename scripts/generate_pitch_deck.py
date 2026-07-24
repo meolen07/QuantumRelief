@@ -576,10 +576,10 @@ def slide_06_tech_dive(prs: Presentation):
     tiles = [
         ("◎", "FiLM Conditioning", "Epicenter-aware Feature-wise Linear Modulation (γ, β) adapts the network to disaster geometry in real time."),
         ("⟳", "Data Re-uploading", "Repeated encoding maps high-dimensional edge features into expressive quantum Hilbert space."),
-        ("⚡", "Sub-ms Inference", "Next-hop logits in under a millisecond — fast enough for live evacuation fleets."),
+        ("Σ", "Quantum Contribution", "Live % = 100×mean(|W_q|)/(mean(|W_c|)+mean(|W_q|)) from PHN combine — ≈37.9% on trained film_hybrid.pt."),
         ("▣", "36-D Local State", "Table I feature layout: epicenter, start/dest, and up to 5 adjacent edges with topology cues."),
         ("⬡", "Hybrid PHN", "PennyLane quantum scaffold fused with classical FiLM for production-ready fallback."),
-        ("↗", "Dynamic Weights", "Algorithm 1 updates travel costs as quake radius and exit congestion evolve."),
+        ("⏱", "Latency & QPU", "Hybrid slower on classical simulators; roadmap: real QPU accelerates routing operators."),
     ]
 
     cols, rows = 3, 2
