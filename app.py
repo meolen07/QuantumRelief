@@ -35,6 +35,7 @@ from src.quantum_hybrid import (
     ensure_hybrid_model,
     quantum_status,
 )
+from src.god_view import render_god_view, render_god_view_controls
 from src.routing_service import (
     compare_three_way,
     dijkstra_escape_route,
@@ -235,6 +236,30 @@ st.markdown(
       min-height: 3rem;
     }
     section.main .block-container { padding-top: 1.1rem; max-width: 1400px; }
+    /* Top-level surface switcher (tab-equivalent, sidebar-aware) */
+    div[data-testid="stRadio"] > div {
+      gap: 0.35rem;
+      background: rgba(10,22,40,0.55);
+      border: 1px solid rgba(168,189,212,0.2);
+      border-radius: 10px;
+      padding: 0.35rem;
+    }
+    div[data-testid="stRadio"] label {
+      background: transparent !important;
+      border-radius: 8px !important;
+      padding: 0.45rem 0.9rem !important;
+      font-family: 'Barlow Condensed', sans-serif !important;
+      font-weight: 600 !important;
+      font-size: 1.05rem !important;
+      letter-spacing: 0.03em;
+      color: var(--qr-mist) !important;
+    }
+    div[data-testid="stRadio"] label[data-checked="true"],
+    div[data-testid="stRadio"] label:has(input:checked) {
+      background: rgba(255,107,26,0.18) !important;
+      color: #fff !important;
+      border: 1px solid rgba(255,107,26,0.45);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -354,6 +379,10 @@ def dijkstra_route(G, start, dest, epicenter_lonlat, max_steps=120):
         G, start, dest, epicenter_lonlat, max_steps=max_steps
     )
     return path, travel
+
+
+# Curated QA scenarios (data/demo_scenarios.json) can still be loaded
+# programmatically via _load_demo_scenarios / _apply_demo_scenario — no UI buttons.
 
 
 def _load_demo_scenarios() -> list:
@@ -556,6 +585,38 @@ def main():
         except Exception:
             pass
 
+    # Top-level surfaces (radio = tab-equivalent; only active branch runs — sidebar-safe)
+    surface = st.radio(
+        "App surface",
+        options=["B2C Emergency Escape", "Command Center (God View)"],
+        horizontal=True,
+        key="app_surface",
+        label_visibility="collapsed",
+    )
+
+    if surface == "Command Center (God View)":
+        with st.sidebar:
+            controls = render_god_view_controls()
+        hybrid_model = mean = std = None
+        if pl_ok:
+            try:
+                hybrid_model, mean, std = get_hybrid_model()
+            except Exception as gv_exc:
+                st.warning(
+                    f"Hybrid model unavailable for God View — {gv_exc}. "
+                    "Metrics still render; trigger will use Classical fallback paths."
+                )
+        render_god_view(
+            G,
+            exits,
+            hybrid_model,
+            mean,
+            std,
+            pennylane_ok=pl_ok,
+            controls=controls,
+        )
+        return
+
     flow = int(st.session_state.get("flow_step", 1))
     steps_html = "".join(
         f'<div class="qr-step'
@@ -588,8 +649,6 @@ def main():
 4. Press **Calculate Escape Route** — **bold green Hybrid** · **cyan Classical** · **dashed Dijkstra**
 5. **Scrub time `t`** — watch red \(r_{epi}\) and yellow \(r_{exit}\) expand
 6. **Compare metrics** — Hybrid should beat Classical and approach Dijkstra
-
-**Judges tip:** Sidebar → **Load Quantum Advantage scenario** for hard cases where green ≠ cyan.
 
 *Gợi ý:* Chọn mode → click bản đồ → Calculate → kéo slider `t`.
             """
@@ -756,39 +815,12 @@ def main():
         )
 
         st.markdown("---")
-        st.markdown("### Load Quantum Advantage scenario")
-        st.caption(
-            "Curated hard cases: **Hybrid ≈ Dijkstra**, Classical diverges. "
-            "Loads Start / Epicenter / Exit and auto-runs Calculate."
-        )
-        demo_scenarios = _load_demo_scenarios()
-        if not demo_scenarios:
-            st.caption(
-                "No `data/demo_scenarios.json` yet — run "
-                "`python scripts/find_advantage_scenarios.py`."
-            )
-        else:
-            for sc in demo_scenarios[:5]:
-                sid = sc.get("id", sc.get("title", "qa"))
-                if st.button(
-                    sc.get("title", sid),
-                    key=f"load_scenario_{sid}",
-                    use_container_width=True,
-                    help=sc.get("blurb", "Load curated Quantum Advantage scenario"),
-                ):
-                    msg = _apply_demo_scenario(G, exits, sc)
-                    try:
-                        st.toast(msg, icon="⚡")
-                    except Exception:
-                        pass
-                    st.rerun()
-
-        st.markdown("---")
         run = st.button(
             "Calculate Escape Route",
             type="primary",
             use_container_width=True,
         )
+        # pending_calculate: set by programmatic _apply_demo_scenario (no UI loader)
         if st.session_state.pop("pending_calculate", False):
             run = True
         st.caption(
@@ -1339,9 +1371,6 @@ Calculate. Trained PHN reports ≈37.9%; a fresh demo init uses quantum_mix≈0.
                 **Story** — Hybrid beats Classical; Hybrid approaches Dijkstra with
                 local Table I features only. Numbers are honest path sums under
                 Algorithm 1 — never forged.
-
-                **Stress tests** — Sidebar **Load Quantum Advantage scenario** loads
-                curated hard start/epi/exit pairs where green ≠ cyan.
 
                 **Method** — Haboury et al. (arXiv:2307.15682), relocated to Intramuros, Manila.
                 """
