@@ -1,0 +1,13 @@
+{
+  "place": "Intramuros, Manila, Philippines",
+  "bbox": {
+    "north": 14.598,
+    "south": 14.578,
+    "east": 120.986,
+    "west": 120.9685
+  },
+  "n_nodes": 338,
+  "n_edges": 518,
+  "max_degree": 5,
+  "min_degree": 1
+}

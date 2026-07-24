@@ -1,0 +1,8 @@
+# QuantumRelief commercial API (FastAPI) — install on top of requirements.txt
+# Does NOT replace Cloud pins in requirements.txt (Streamlit stays lean).
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements-api.txt
+#
+fastapi>=0.110,<0.120
+uvicorn[standard]>=0.27,<0.35

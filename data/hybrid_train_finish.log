@@ -1,0 +1,31 @@
+{
+  "pennylane_available": true,
+  "n_qubits": 7,
+  "n_film_qubits": 2,
+  "n_main_qubits": 5,
+  "device": "default.qubit",
+  "hybrid_trained": false,
+  "note": "PennyLane available \u2014 Hybrid QML (PHN) inference enabled. Upload a trained film_hybrid.pt for full HQNN weights."
+}
+Training hybrid on 2000 samples (A=5, B=3)…
+[QuantumRelief] Loaded FiLM checkpoint from /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt
+[QuantumRelief] Hybrid Phase A — quantum+combine (5 epochs, batch=8)…
+  A   1/5  train_acc=0.856  val_acc=0.880  val_loss=0.2665
+  A   2/5  train_acc=0.871  val_acc=0.863  val_loss=0.2770
+  A   4/5  train_acc=0.865  val_acc=0.923  val_loss=0.2060
+  A   5/5  train_acc=0.861  val_acc=0.900  val_loss=0.2261
+[QuantumRelief] Hybrid Phase B — full PHN fine-tune (3 epochs)…
+  B   1/3  train_acc=0.867  val_acc=0.910  val_loss=0.2297
+  B   2/3  train_acc=0.876  val_acc=0.907  val_loss=0.2361
+  B   3/3  train_acc=0.878  val_acc=0.890  val_loss=0.2362
+[QuantumRelief] Saved trained Hybrid QML → /Users/nguyenhuynhmailinh/QuantumRelief/models/film_hybrid.pt (val_acc=0.923, q_contrib=34.3%)
+metrics: {
+  "phase_a_val_acc": 0.9233333333333333,
+  "phase_a_train_acc": 0.8652941176470588,
+  "best_val_loss": 0.2060263920451204,
+  "val_acc": 0.9233333333333333,
+  "train_acc": 0.8652941176470588,
+  "quantum_contrib_pct": 34.343596140982
+}
+elapsed_sec=560.5

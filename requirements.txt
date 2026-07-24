@@ -1,0 +1,23 @@
+# QuantumRelief — Streamlit Community Cloud (Python 3.11 via runtime.txt)
+# Classical FiLM + Folium UI + PennyLane hybrid scaffold (demo).
+#
+# Install order matters: pin NumPy BEFORE torch so Cloud wheels share a
+# compatible ABI (avoids PyTorch "Numpy is not available.").
+
+numpy==1.26.4
+pandas>=2.0,<2.3
+networkx>=3.1,<3.4
+osmnx>=1.9,<2.1
+shapely>=2.0,<2.1
+
+# CPU torch with known Linux/macOS wheels for Python 3.11
+torch==2.2.2
+
+# PennyLane hybrid FiLM (keep autoray pin for torch/pennylane compatibility)
+autoray>=0.6.1,<0.7
+pennylane>=0.34,<0.40
+
+streamlit>=1.28,<1.45
+folium>=0.15,<0.20
+streamlit-folium>=0.15,<0.25
+tqdm>=4.66,<5

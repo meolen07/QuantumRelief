@@ -1,0 +1,60 @@
+=== QuantumRelief hackathon retrain ===
+{
+  "pennylane_available": true,
+  "n_qubits": 7,
+  "n_film_qubits": 2,
+  "n_main_qubits": 5,
+  "device": "default.qubit",
+  "hybrid_trained": false,
+  "note": "PennyLane available \u2014 Hybrid QML (PHN) inference enabled. Upload a trained film_hybrid.pt for full HQNN weights."
+}
+
+[1/4] Generating dataset (400 episodes)…
+[QuantumRelief] Loading cached graph from /Users/nguyenhuynhmailinh/QuantumRelief/data/manila_intramuros_graph.graphml
+[QuantumRelief] Generating 400 routing episodes…
+  0%|          | 0/400 [00:00<?, ?it/s]  1%|          | 4/400 [00:00<00:10, 37.79it/s]  2%|▏         | 8/400 [00:00<00:12, 31.62it/s]  3%|▎         | 13/400 [00:00<00:10, 36.21it/s]  4%|▍         | 17/400 [00:00<00:11, 34.22it/s]  5%|▌         | 21/400 [00:00<00:10, 35.86it/s]  6%|▋         | 25/400 [00:00<00:11, 33.91it/s]  7%|▋         | 29/400 [00:00<00:10, 33.83it/s]  8%|▊         | 34/400 [00:00<00:10, 36.10it/s] 10%|▉         | 38/400 [00:01<00:10, 35.86it/s] 10%|█         | 42/400 [00:01<00:10, 34.16it/s] 12%|█▏        | 47/400 [00:01<00:10, 35.02it/s] 14%|█▎        | 54/400 [00:01<00:08, 41.56it/s] 15%|█▍        | 59/400 [00:01<00:08, 41.69it/s] 16%|█▌        | 64/400 [00:01<00:08, 39.32it/s] 17%|█▋        | 68/400 [00:01<00:08, 38.32it/s] 18%|█▊        | 72/400 [00:01<00:09, 35.37it/s] 19%|█▉        | 77/400 [00:02<00:08, 38.16it/s] 20%|██        | 81/400 [00:02<00:08, 37.08it/s] 21%|██▏       | 85/400 [00:02<00:08, 35.45it/s] 22%|██▏       | 89/400 [00:02<00:09, 33.22it/s] 23%|██▎       | 93/400 [00:02<00:14, 21.77it/s] 24%|██▍       | 98/400 [00:02<00:11, 26.57it/s] 26%|██▌       | 102/400 [00:03<00:10, 27.71it/s] 26%|██▋       | 106/400 [00:03<00:09, 29.61it/s] 28%|██▊       | 111/400 [00:03<00:08, 33.96it/s] 29%|██▉       | 115/400 [00:03<00:08, 31.78it/s] 30%|██▉       | 119/400 [00:03<00:08, 31.96it/s] 31%|███       | 123/400 [00:03<00:08, 31.63it/s] 32%|███▏      | 127/400 [00:03<00:08, 32.00it/s] 33%|███▎      | 131/400 [00:03<00:08, 32.68it/s] 34%|███▍      | 135/400 [00:04<00:07, 33.81it/s] 35%|███▍      | 139/400 [00:04<00:07, 33.82it/s] 36%|███▌      | 143/400 [00:04<00:08, 30.49it/s] 37%|███▋      | 147/400 [00:04<00:08, 30.98it/s] 39%|███▉      | 155/400 [00:04<00:06, 40.71it/s] 40%|████      | 160/400 [00:04<00:06, 39.53it/s] 41%|████▏     | 165/400 [00:04<00:05, 39.48it/s] 43%|████▎     | 171/400 [00:04<00:05, 43.15it/s] 44%|████▍     | 176/400 [00:05<00:05, 42.55it/s] 45%|████▌     | 181/400 [00:05<00:05, 40.04it/s] 46%|████▋     | 186/400 [00:05<00:05, 38.79it/s] 48%|████▊     | 190/400 [00:05<00:05, 38.39it/s] 48%|████▊     | 194/400 [00:05<00:05, 35.72it/s] 50%|████▉     | 198/400 [00:05<00:05, 36.23it/s] 50%|█████     | 202/400 [00:05<00:05, 36.67it/s] 52%|█████▏    | 206/400 [00:05<00:05, 37.09it/s] 53%|█████▎    | 211/400 [00:06<00:05, 37.71it/s] 54%|█████▍    | 215/400 [00:06<00:05, 34.22it/s] 55%|█████▌    | 220/400 [00:06<00:04, 36.77it/s] 56%|█████▌    | 224/400 [00:06<00:04, 37.23it/s] 58%|█████▊    | 231/400 [00:06<00:03, 43.01it/s] 59%|█████▉    | 236/400 [00:06<00:04, 39.04it/s] 61%|██████    | 243/400 [00:06<00:03, 44.65it/s] 62%|██████▏   | 248/400 [00:06<00:03, 40.90it/s] 63%|██████▎   | 253/400 [00:07<00:03, 37.88it/s] 64%|██████▍   | 257/400 [00:07<00:04, 34.97it/s] 65%|██████▌   | 261/400 [00:07<00:04, 34.23it/s] 66%|██████▋   | 265/400 [00:07<00:04, 33.16it/s] 68%|██████▊   | 270/400 [00:07<00:03, 34.38it/s] 68%|██████▊   | 274/400 [00:07<00:03, 34.60it/s] 70%|███████   | 280/400 [00:07<00:02, 40.35it/s] 71%|███████▏  | 285/400 [00:07<00:02, 41.56it/s] 73%|███████▎  | 292/400 [00:08<00:02, 46.96it/s] 74%|███████▍  | 297/400 [00:08<00:02, 44.50it/s] 76%|███████▌  | 302/400 [00:08<00:02, 38.40it/s] 77%|███████▋  | 307/400 [00:08<00:02, 36.68it/s] 78%|███████▊  | 311/400 [00:08<00:02, 34.00it/s] 79%|███████▉  | 315/400 [00:08<00:02, 34.77it/s] 80%|███████▉  | 319/400 [00:08<00:02, 35.59it/s] 81%|████████  | 323/400 [00:08<00:02, 34.59it/s] 82%|████████▏ | 327/400 [00:09<00:02, 35.05it/s] 83%|████████▎ | 333/400 [00:09<00:01, 37.86it/s] 84%|████████▍ | 337/400 [00:09<00:01, 36.97it/s] 86%|████████▌ | 343/400 [00:09<00:01, 42.34it/s] 87%|████████▋ | 348/400 [00:09<00:01, 36.82it/s] 88%|████████▊ | 353/400 [00:09<00:01, 39.58it/s] 90%|████████▉ | 358/400 [00:09<00:01, 36.15it/s] 90%|█████████ | 362/400 [00:10<00:01, 36.22it/s] 92%|█████████▏| 368/400 [00:10<00:00, 37.91it/s] 93%|█████████▎| 373/400 [00:10<00:00, 38.26it/s] 94%|█████████▍| 378/400 [00:10<00:00, 35.47it/s] 96%|█████████▌| 382/400 [00:10<00:00, 32.01it/s] 96%|█████████▋| 386/400 [00:10<00:00, 33.31it/s] 98%|█████████▊| 391/400 [00:10<00:00, 35.37it/s] 99%|█████████▉| 395/400 [00:10<00:00, 32.28it/s]100%|█████████▉| 399/400 [00:11<00:00, 33.98it/s]100%|██████████| 400/400 [00:11<00:00, 35.98it/s]
+[QuantumRelief] Saved dataset (7709 samples) → /Users/nguyenhuynhmailinh/QuantumRelief/data/routing_dataset.npz
+  samples: 7709  X=(7709, 36)
+
+[2/4] Training Classical FiLM (100 epochs)…
+[QuantumRelief] Training Classical FiLM on cpu (100 epochs)…
+  epoch   1/100  train_acc=0.380  val_acc=0.696  val_loss=0.8802
+  epoch   5/100  train_acc=0.785  val_acc=0.814  val_loss=0.4744
+  epoch  10/100  train_acc=0.816  val_acc=0.825  val_loss=0.4282
+  epoch  15/100  train_acc=0.826  val_acc=0.831  val_loss=0.4159
+  epoch  20/100  train_acc=0.838  val_acc=0.850  val_loss=0.3927
+  epoch  25/100  train_acc=0.843  val_acc=0.861  val_loss=0.3692
+  epoch  30/100  train_acc=0.853  val_acc=0.876  val_loss=0.3684
+  epoch  35/100  train_acc=0.860  val_acc=0.873  val_loss=0.3612
+  epoch  40/100  train_acc=0.857  val_acc=0.876  val_loss=0.3498
+  epoch  45/100  train_acc=0.858  val_acc=0.877  val_loss=0.3511
+  epoch  50/100  train_acc=0.866  val_acc=0.886  val_loss=0.3490
+  epoch  55/100  train_acc=0.868  val_acc=0.877  val_loss=0.3577
+  epoch  60/100  train_acc=0.869  val_acc=0.882  val_loss=0.3495
+  epoch  65/100  train_acc=0.873  val_acc=0.889  val_loss=0.3453
+  epoch  70/100  train_acc=0.876  val_acc=0.877  val_loss=0.3638
+  epoch  75/100  train_acc=0.878  val_acc=0.884  val_loss=0.3444
+  epoch  80/100  train_acc=0.875  val_acc=0.884  val_loss=0.3578
+  epoch  85/100  train_acc=0.884  val_acc=0.887  val_loss=0.3613
+  epoch  90/100  train_acc=0.869  val_acc=0.882  val_loss=0.3447
+  epoch  95/100  train_acc=0.880  val_acc=0.883  val_loss=0.3551
+  epoch 100/100  train_acc=0.885  val_acc=0.885  val_loss=0.3614
+[QuantumRelief] Saved model → /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt (val_acc=0.882)
+  classical metrics: {'train_acc': 0.8605006105006106, 'val_acc': 0.881590319792567, 'val_loss': 0.34239463730938186, 'best_epoch': 42.0}
+
+[3/4] Training Hybrid QML PHN (phase A=10, B=6)…
+  hybrid train subset: 4000 / 7709 samples
+[QuantumRelief] Loaded FiLM checkpoint from /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt
+[QuantumRelief] Hybrid Phase A — quantum+combine (10 epochs, batch=8)…
+  A   1/10  train_acc=0.845  val_acc=0.887  val_loss=0.2773
+  A   2/10  train_acc=0.848  val_acc=0.880  val_loss=0.2746
+  A   4/10  train_acc=0.857  val_acc=0.880  val_loss=0.2928
+  A   6/10  train_acc=0.862  val_acc=0.882  val_loss=0.2684
+  A   8/10  train_acc=0.855  val_acc=0.875  val_loss=0.2822
+  A  10/10  train_acc=0.864  val_acc=0.888  val_loss=0.2697
+[QuantumRelief] Hybrid Phase B — full PHN fine-tune (6 epochs)…
+  B   1/6  train_acc=0.850  val_acc=0.875  val_loss=0.2931
+  B   2/6  train_acc=0.866  val_acc=0.873  val_loss=0.3054
+/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/multiprocessing/resource_tracker.py:224: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

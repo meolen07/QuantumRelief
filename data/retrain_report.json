@@ -1,0 +1,18 @@
+{
+  "hybrid_finish": {
+    "samples": 2000,
+    "epochs_quantum": 5,
+    "epochs_finetune": 3,
+    "val_acc": 0.9233333333333333,
+    "quantum_contrib_pct": 34.343596140982,
+    "demo_mode": false,
+    "elapsed_sec": 560.5,
+    "checkpoint": "models/film_hybrid.pt"
+  },
+  "route_smoke": {
+    "scenarios": 3,
+    "exit_reached": "3/3",
+    "assist": "0/3"
+  },
+  "note": "Shorter complete Hybrid A+B train after Phase B battery interrupt; classical checkpoint retained from prior retrain."
+}
