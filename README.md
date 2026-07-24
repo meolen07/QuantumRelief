@@ -11,28 +11,41 @@ Team 5 — **Quantrio** · QC4SG SEA Hackathon
 
 Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
 
+**Tagline:** Hybrid delivers near-Dijkstra quality with quantum-classical local inference.
+
 ---
 
 ## Overview
 
-QuantumRelief predicts **next-hop emergency escape routes** on the Manila **Intramuros** road network under expanding earthquake and exit-traffic hazards. A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical Dijkstra is shown for comparison only.
+QuantumRelief predicts **next-hop emergency escape routes** on the Manila **Intramuros** road network under expanding earthquake and exit-traffic hazards. A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline.
 
 Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](https://arxiv.org/abs/2307.15682)* (Furubira → Manila). Surfaces: **Streamlit Crisis UX** + **FastAPI B2B Quantum Routing API**.
 
-| Checkpoint | Notes |
-| --- | --- |
-| Hybrid QML (`film_hybrid.pt`) | Val acc ≈ **0.92** · Quantum contribution ≈ **34%** · `demo_mode=False` |
-| Route smoke | **3/3** EXIT REACHED (no Dijkstra assist) |
+### Results (latest retrain)
+
+From `data/retrain_report.json` — Hybrid vs Classical vs Dijkstra (24 route trials).
+
+| Metric | Hybrid | Classical | Dijkstra |
+| --- | --- | --- | --- |
+| Val accuracy | ≈ **0.922** | ≈ **0.875** | — |
+| Mean travel time | ≈ **9.78** | ≈ **10.85** | ≈ **9.98** |
+| Exit reached | **100%** | **100%** | **100%** |
+| Path overlap vs Dijkstra | ≈ **71.4%** | ≈ **64.3%** | — |
+| Quantum contribution | ≈ **37.9%** | — | — |
+
+Hybrid beats Classical on ≈ **91.7%** of trials and stays near Dijkstra on ≈ **95.8%**. Checkpoints: `film_hybrid.pt`, `film_classical.pt` (`demo_mode=False`).
 
 ---
 
 ## Key features
 
-- **Hybrid QML hero** — PennyLane PHN FiLM; bold green path on the map
-- **Classical baseline** — Dijkstra dashed overlay for judge comparison
+- **Hybrid QML hero** — PennyLane PHN FiLM; bold **green** path on the map
+- **Classical FiLM ablation** — **cyan** overlay (same FiLM, no quantum branch)
+- **Dijkstra baseline** — **dashed** overlay with full Algorithm 1 dynamic weights
+- **3-way metrics** — travel time, exit reached, path overlap, quantum contribution
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
 - **Crisis UX** — Folium map-click Start / Epicenter / Exit
-- **B2B API** — FastAPI `/api/v1/calculate_route` for partners and ops systems
+- **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 
 ---
@@ -48,6 +61,7 @@ flowchart LR
   RS --> HQ[Hybrid FiLM PHN]
   HQ --> PL[PennyLane]
   RS --> CF[Classical FiLM]
+  RS --> DJ[Dijkstra oracle]
 ```
 
 | Paper (Furubira) | QuantumRelief (Manila) |
@@ -56,11 +70,11 @@ flowchart LR
 | 3 exits + random epicenter | Perimeter exits + map-click epicenter |
 | Algorithm 1 dynamic weights | `src/dynamic_simulation.py` |
 | Table I input size 36 | Same layout, local km projection |
-| Classical + Quantum FiLM PHN | Classical ablation + **Hybrid QML hero** |
+| Classical + Quantum FiLM PHN | Classical ablation + **Hybrid QML hero** + Dijkstra baseline |
 
 Radii: \(r_{epi} = 0.5 + \sqrt{0.0002\, t}\), \(r_{exit} = \sqrt{0.00075\, t}\).
 
-Neighbor logits are masked to real degree; a light Dijkstra assist may finish a stalled path — branding remains **Hybrid QML**.
+Neighbor logits are masked to real degree; near-ties break toward the live Dijkstra next hop; a light Dijkstra assist may finish a stalled path — branding remains **Hybrid QML**. Travel times are honest path sums (never forged).
 
 ---
 
@@ -85,19 +99,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install -r requirements-api.txt
 uvicorn api:app --reload --host 0.0.0.0 --port 8000
-# or: python api.py
 ```
 
 ```bash
 curl -s http://127.0.0.1:8000/
-# → {"status":"QuantumRelief API is running"}
 
 curl -s -X POST http://127.0.0.1:8000/api/v1/calculate_route \
   -H "Content-Type: application/json" \
   -d '{
     "start_coords": [14.5895, 120.9750],
     "epicenter_coords": [14.5850, 120.9780],
-    "exit_coords": [14.5920, 120.9720]
+    "exit_coords": [14.5920, 120.9720],
+    "include_comparison": true
   }'
 ```
 
@@ -109,10 +122,10 @@ OpenAPI docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 1. Sidebar: set click mode **Start → Epicenter → Exit**
 2. **Click the Folium map** (Start/Exit snap to nearest road node)
-3. Keep **Hybrid QML (PennyLane)** selected
+3. Keep comparison overlays ON (Classical cyan · Dijkstra dashed)
 4. Press **Calculate Escape Route**
 5. Scrub simulation time **`t`** — red \(r_{epi}\) / yellow \(r_{exit}\) expand
-6. Compare **bold green Hybrid** vs **dashed Dijkstra**; read Exit Reached + Quantum Contribution
+6. Read the **3-way dashboard**: Hybrid should beat Classical and approach Dijkstra
 
 In-app: expander **How to use QuantumRelief** (sidebar **How to use**).
 
@@ -127,9 +140,9 @@ QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
   requirements-api.txt     # FastAPI + uvicorn
-  app.py                   # Crisis UX — map-click + Hybrid hero
+  app.py                   # Crisis UX — 3-way Hybrid / Classical / Dijkstra
   api.py                   # B2B Quantum Routing API
-  data/                    # GraphML + routing_dataset.npz
+  data/                    # GraphML + routing_dataset.npz + retrain_report.json
   models/                  # film_classical.pt, film_hybrid.pt
   src/
     graph_setup.py         # OSMnx / NetworkX / exits
@@ -137,7 +150,7 @@ QuantumRelief/
     dataset_generation.py  # Table I vectors + Dijkstra labels
     film_model.py          # Classical FiLM
     quantum_hybrid.py      # PennyLane Hybrid PHN
-    routing_service.py     # Shared Hybrid helpers (API + app)
+    routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
   scripts/
     retrain_models.py
     generate_pitch_deck.py
@@ -153,12 +166,14 @@ QuantumRelief/
 | `models/film_classical.pt` | Classical FiLM ablation |
 | `data/manila_intramuros_graph.graphml` | Cached Intramuros road graph |
 | `data/routing_dataset.npz` | Training / eval samples |
+| `data/retrain_report.json` | Val acc + 3-way route smoke metrics |
 
-**Retrain** (optional; CPU-bound — prefer shipped Hybrid checkpoint for demos):
+**Retrain** (CPU-bound Hybrid; periodic checkpoints saved mid-run):
 
 ```bash
 source .venv/bin/activate
-python -u scripts/retrain_models.py 400 100 10 6
+python -u scripts/retrain_models.py 500 120 12 8 3500
+# args: episodes classical_epochs hybrid_A hybrid_B hybrid_max_samples
 ```
 
 **Smoke checks:**
@@ -186,8 +201,6 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 
 **Quantrio** (Team 5) · QC4SG — SEA Hackathon  
 Manila Intramuros emergency routing with Hybrid QML.
-
-<!-- Contact: add emails / LinkedIn here -->
 
 ---
 
