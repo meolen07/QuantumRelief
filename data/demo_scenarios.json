@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-07-24T22:40:31",
+  "n_samples": 60,
+  "n_hits": 17,
+  "top_n": 5,
+  "seed": 42,
+  "quantum_contribution_pct": 37.9,
+  "note": "Curated hard scenarios where Hybrid stays near Dijkstra while Classical FiLM is worse or diverges. Searched honestly on Manila Intramuros with Algorithm 1 dynamics \u2014 no forged Classical failures.",
+  "judge_goal": "Bold green Hybrid \u2260 cyan Classical; Hybrid close to dashed Dijkstra.",
+  "elapsed_sec": 26.9,
+  "scenarios": [
+    {
+      "id": "qa_1",
+      "title": "QA-1: Hybrid = Dijkstra \u00b7 Classical 2.5\u00d7 slower",
+      "blurb": "Green \u2248 dashed; cyan diverges hard. Expected: H=12.2 C=30.6 D=12.2",
+      "start_node": 279672293,
+      "dest_node": 159476291,
+      "epi_lat": 14.589761444334444,
+      "epi_lon": 120.97749722824072,
+      "start_lat": 14.5789035,
+      "start_lon": 120.9795367,
+      "exit_lat": 14.5976082,
+      "exit_lon": 120.9761644,
+      "metrics": {
+        "hybrid_time": 12.21426645003381,
+        "classical_time": 30.626535664954982,
+        "dijkstra_time": 12.21426645003381,
+        "hybrid_overlap_pct": 100.0,
+        "classical_overlap_pct": 9.836065573770492,
+        "paths_diverge": true,
+        "score": 12.2022
+      }
+    },
+    {
+      "id": "qa_2",
+      "title": "QA-2: Hybrid = Dijkstra \u00b7 Classical 1.5\u00d7 slower",
+      "blurb": "Near-perfect Hybrid overlap; Classical collapses. Expected: H=14.7 C=22.7 D=14.7",
+      "start_node": 1020278448,
+      "dest_node": 159476291,
+      "epi_lat": 14.582753460170352,
+      "epi_lon": 120.97413509412826,
+      "start_lat": 14.5798374,
+      "start_lon": 120.977565,
+      "exit_lat": 14.5976082,
+      "exit_lon": 120.9761644,
+      "metrics": {
+        "hybrid_time": 14.675579257528382,
+        "classical_time": 22.665094835509944,
+        "dijkstra_time": 14.675579257528382,
+        "hybrid_overlap_pct": 100.0,
+        "classical_overlap_pct": 3.8461538461538463,
+        "paths_diverge": true,
+        "score": 9.4928
+      }
+    },
+    {
+      "id": "qa_3",
+      "title": "QA-3: Hybrid \u2248 Dijkstra \u00b7 Classical diverges",
+      "blurb": "96% Hybrid overlap vs 15% Classical. Expected: H=11.0 C=15.6 D=11.3",
+      "start_node": 279672207,
+      "dest_node": 159476291,
+      "epi_lat": 14.594114860758292,
+      "epi_lon": 120.98458591577496,
+      "start_lat": 14.5785912,
+      "start_lon": 120.9796841,
+      "exit_lat": 14.5976082,
+      "exit_lon": 120.9761644,
+      "metrics": {
+        "hybrid_time": 11.015489839337345,
+        "classical_time": 15.612180818146069,
+        "dijkstra_time": 11.265397636660051,
+        "hybrid_overlap_pct": 96.66666666666667,
+        "classical_overlap_pct": 14.814814814814815,
+        "paths_diverge": true,
+        "score": 8.731
+      }
+    },
+    {
+      "id": "qa_4",
+      "title": "QA-4: Hybrid beats Classical on hard corridor",
+      "blurb": "Strong Algorithm-1 dynamics \u00b7 paths diverge. Expected: H=18.9 C=35.5 D=25.2",
+      "start_node": 1020278518,
+      "dest_node": 8043660306,
+      "epi_lat": 14.585861466275247,
+      "epi_lon": 120.9798953827094,
+      "start_lat": 14.5782875,
+      "start_lon": 120.9785118,
+      "exit_lat": 14.5899998,
+      "exit_lon": 120.9858763,
+      "metrics": {
+        "hybrid_time": 18.90265185563519,
+        "classical_time": 35.50591168985612,
+        "dijkstra_time": 25.15798222634873,
+        "hybrid_overlap_pct": 7.8125,
+        "classical_overlap_pct": 20.689655172413794,
+        "paths_diverge": true,
+        "score": 8.4046
+      }
+    },
+    {
+      "id": "qa_5",
+      "title": "QA-5: Hybrid faster than Classical & Dijkstra",
+      "blurb": "Local Hybrid inference finds a shorter escape. Expected: H=7.1 C=12.5 D=12.9",
+      "start_node": 3202651965,
+      "dest_node": 159476291,
+      "epi_lat": 14.578748826380357,
+      "epi_lon": 120.96930517177269,
+      "start_lat": 14.5797659,
+      "start_lon": 120.9772001,
+      "exit_lat": 14.5976082,
+      "exit_lon": 120.9761644,
+      "metrics": {
+        "hybrid_time": 7.132076023251587,
+        "classical_time": 12.509415923548577,
+        "dijkstra_time": 12.859037693589544,
+        "hybrid_overlap_pct": 21.428571428571427,
+        "classical_overlap_pct": 26.666666666666668,
+        "paths_diverge": true,
+        "score": 8.1049
+      }
+    }
+  ]
+}
