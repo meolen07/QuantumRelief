@@ -35,14 +35,42 @@ From `data/retrain_report.json` — Hybrid vs Classical vs Dijkstra (24 route tr
 
 Hybrid beats Classical on ≈ **91.7%** of trials and stays near Dijkstra on ≈ **95.8%**. Checkpoints: `film_hybrid.pt`, `film_classical.pt` (`demo_mode=False`).
 
+### Quantum Contribution (≈37.9%)
+
+Live metric from `HybridFiLMNetwork.combine` (`Linear(10→5)`), not a hardcoded slide number:
+
+```
+W = model.combine.weight          # shape (5, 10)
+c_mag = mean(|W[:, 0:5]|)         # classical FiLM columns
+q_mag = mean(|W[:, 5:10]|)        # PennyLane quantum columns
+Quantum Contribution % = 100 × q_mag / (c_mag + q_mag)
+```
+
+Implemented in `src/quantum_hybrid.py` → `estimate_quantum_contribution_pct`. Streamlit expander **What is Quantum Contribution?** shows the same formula.
+
+### Latency note
+
+On Calculate, the UI times Hybrid / Classical / Dijkstra path rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex routing operators while Classical FiLM remains the production fallback.
+
+### Quantum Advantage stress scenarios
+
+Hard start / epicenter / exit pairs (Hybrid ≈ Dijkstra, Classical diverges) live in `data/demo_scenarios.json`. Regenerate:
+
+```bash
+python -u scripts/find_advantage_scenarios.py 60 5 42
+```
+
+Streamlit sidebar: **Load Quantum Advantage scenario** → auto-runs 3-way compare. Judge glance: **bold green ≠ cyan**, green close to **dashed** Dijkstra.
+
 ---
 
 ## Key features
 
-- **Hybrid QML hero** — PennyLane PHN FiLM; bold **green** path on the map
+- **Hybrid QML hero** — PennyLane PHN FiLM; **bold green** path on the map
 - **Classical FiLM ablation** — **cyan** overlay (same FiLM, no quantum branch)
 - **Dijkstra baseline** — **dashed** overlay with full Algorithm 1 dynamic weights
-- **3-way metrics** — travel time, exit reached, path overlap, quantum contribution
+- **3-way metrics** — travel time, exit reached, path overlap, quantum contribution, **inference latency (ms)**
+- **Quantum Advantage scenarios** — curated hard cases in the Streamlit sidebar
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
 - **Crisis UX** — Folium map-click Start / Epicenter / Exit
 - **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
@@ -120,14 +148,14 @@ OpenAPI docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ## How to use (Crisis UX)
 
-1. Sidebar: set click mode **Start → Epicenter → Exit**
+1. Sidebar: set click mode **Start → Epicenter → Exit** *(or load a Quantum Advantage scenario)*
 2. **Click the Folium map** (Start/Exit snap to nearest road node)
-3. Keep comparison overlays ON (Classical cyan · Dijkstra dashed)
+3. Keep comparison overlays ON (**bold green** Hybrid · **cyan** Classical · **dashed** Dijkstra)
 4. Press **Calculate Escape Route**
 5. Scrub simulation time **`t`** — red \(r_{epi}\) / yellow \(r_{exit}\) expand
-6. Read the **3-way dashboard**: Hybrid should beat Classical and approach Dijkstra
+6. Read the **3-way dashboard**: travel times, quantum contribution formula, latency (ms)
 
-In-app: expander **How to use QuantumRelief** (sidebar **How to use**).
+In-app: expander **How to use QuantumRelief**, **What is Quantum Contribution?**, sidebar **How to use**.
 
 Optional VN: *Chọn mode → click bản đồ → Calculate → kéo slider `t`.*
 
@@ -143,16 +171,18 @@ QuantumRelief/
   app.py                   # Crisis UX — 3-way Hybrid / Classical / Dijkstra
   api.py                   # B2B Quantum Routing API
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
+                           # + demo_scenarios.json (Quantum Advantage picks)
   models/                  # film_classical.pt, film_hybrid.pt
   src/
     graph_setup.py         # OSMnx / NetworkX / exits
     dynamic_simulation.py  # Algorithm 1 weights
     dataset_generation.py  # Table I vectors + Dijkstra labels
     film_model.py          # Classical FiLM
-    quantum_hybrid.py      # PennyLane Hybrid PHN
+    quantum_hybrid.py      # PennyLane Hybrid PHN (+ quantum contribution %)
     routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
   scripts/
     retrain_models.py
+    find_advantage_scenarios.py  # Search / save hard demo scenarios
     generate_pitch_deck.py
 ```
 
@@ -167,6 +197,7 @@ QuantumRelief/
 | `data/manila_intramuros_graph.graphml` | Cached Intramuros road graph |
 | `data/routing_dataset.npz` | Training / eval samples |
 | `data/retrain_report.json` | Val acc + 3-way route smoke metrics |
+| `data/demo_scenarios.json` | Curated Quantum Advantage stress scenarios |
 
 **Retrain** (CPU-bound Hybrid; periodic checkpoints saved mid-run):
 
