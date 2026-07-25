@@ -9,6 +9,12 @@
   "note": "Strict Hybrid travel wins only (H < C). Honest Algorithm-1 dynamics \u2014 no forged Classical failures.",
   "judge_goal": "Cyan Hybrid travel strictly below Gold Classical; Hybrid near white Dijkstra when possible.",
   "default_scenario_id": "qa_2",
+  "judge_demo": {
+    "scenario_id": "qa_2",
+    "flood_seed": 17025,
+    "corridor_extra": 11,
+    "note": "Pinned Flooded corridor seed for Run judge demo — Hybrid travel win + path diverge under soft ×12 flood stand-in."
+  },
   "elapsed_sec": 32.6,
   "scenarios": [
     {
