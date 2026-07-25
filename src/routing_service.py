@@ -17,9 +17,12 @@ import networkx as nx
 import numpy as np
 
 from src.dataset_generation import build_input_vector, dijkstra_next_node
-from src.dynamic_simulation import (
-    DynamicEnvironment,
-    apply_edge_disruptions,
+from src.dynamic_simulation import DynamicEnvironment
+from src.traffic_provider import (
+    active_feed_disruptions,
+    apply_provider_disruptions,
+    get_traffic_provider,
+    resolve_traffic_mode,
 )
 from src.film_model import ensure_trained_model, predict_logits
 from src.graph_setup import load_or_build_graph, select_exit_nodes
@@ -173,9 +176,9 @@ def _complete_with_dijkstra(env, path, dest, radii_trace, max_steps: int):
 
 
 def _graph_with_disruptions(G, edge_disruptions=None):
-    """Copy graph and apply optional soft edge disruptions before Algorithm 1."""
+    """Copy graph and apply soft edge disruptions via the traffic provider."""
     H = G.copy()
-    applied = apply_edge_disruptions(H, edge_disruptions)
+    applied = apply_provider_disruptions(H, edge_disruptions)
     return H, applied
 
 
@@ -194,8 +197,8 @@ def predict_escape_route(
     Roll out Hybrid / Classical FiLM under Algorithm 1 dynamics.
 
     Optional ``edge_disruptions`` (EdgeDisruptionSet / serializable dict /
-    edge list) apply soft high-weight penalties before epicenter dynamics —
-    stand-in for traffic / closures until live feeds.
+    edge list) apply soft high-weight penalties before epicenter dynamics
+    through the active ``TrafficProvider`` (demo mock or live stub).
 
     Neighbor selection masks padded degree slots to -inf, prefers unvisited
     neighbors to avoid cycles, and completes with Dijkstra if the ML policy
@@ -707,6 +710,7 @@ class EscapeRouteResult:
     classical: Optional[EngineRouteSummary] = None
     dijkstra: Optional[EngineRouteSummary] = None
     comparison: Optional[Dict[str, Any]] = None
+    feed: Optional[Dict[str, Any]] = None  # mock / live conditions metadata
 
 
 def compare_three_way(
@@ -927,6 +931,8 @@ def calculate_hybrid_route(
     *,
     max_steps: Optional[int] = None,
     include_comparison: bool = True,
+    edge_disruptions=None,
+    use_mock_feed: Optional[bool] = None,
 ) -> EscapeRouteResult:
     """
     End-to-end Hybrid QML route: snap coords → dynamic sim → PHN rollout.
@@ -935,7 +941,15 @@ def calculate_hybrid_route(
     Epicenter is used as ``(lon, lat)`` for Algorithm 1 (OSMnx convention).
 
     When ``include_comparison`` is True, Classical FiLM + Dijkstra summaries
-    are attached for the hackathon 3-way story.
+    are attached for the 3-way product compare.
+
+    Traffic / disruptions
+    ---------------------
+    Production swaps only the ``TrafficProvider`` (``QR_TRAFFIC_MODE``).
+    In demo mode, ``use_mock_feed=True`` (default when mode is demo) loads
+    the active ``MockTrafficFeed`` city conditions unless the caller passes
+    explicit ``edge_disruptions``. Live mode leaves disruptions empty until
+    TomTom / HERE is wired (or the client supplies disruptions).
     """
     if len(start_coords) != 2 or len(epicenter_coords) != 2 or len(exit_coords) != 2:
         raise ValueError(
@@ -967,6 +981,29 @@ def calculate_hybrid_route(
 
     epicenter_lonlat: Tuple[float, float] = (epi_lon, epi_lat)
 
+    mode = resolve_traffic_mode()
+    feed_meta: Optional[Dict[str, Any]] = None
+    disruptions = edge_disruptions
+    apply_feed = use_mock_feed if use_mock_feed is not None else (mode == "demo")
+    if disruptions is None and apply_feed and mode == "demo":
+        disruptions, snap = active_feed_disruptions(G, near_node=start, refresh=False)
+        if snap is not None and hasattr(snap, "to_dict"):
+            feed_meta = snap.to_dict()
+    elif disruptions is not None:
+        feed_meta = {
+            "feed": "client_supplied",
+            "source": "request.edge_disruptions",
+            "mode": mode,
+        }
+    else:
+        info = get_traffic_provider().mode_info()
+        feed_meta = {
+            "feed": info.mode,
+            "source": info.provider_name,
+            "badge": info.badge,
+            "detail": info.detail,
+        }
+
     try:
         if include_comparison:
             cmp = compare_three_way(
@@ -979,6 +1016,7 @@ def calculate_hybrid_route(
                 dest,
                 epicenter_lonlat,
                 max_steps=max_steps,
+                edge_disruptions=disruptions,
             )
             h = cmp["hybrid"]
             path = h["path"]
@@ -997,6 +1035,7 @@ def calculate_hybrid_route(
                 dest,
                 epicenter_lonlat,
                 max_steps=max_steps,
+                edge_disruptions=disruptions,
             )
             q_contrib = estimate_quantum_contribution_pct(hybrid, sample_x)
             cmp = None
@@ -1075,8 +1114,17 @@ def calculate_hybrid_route(
             **meta,
             "pennylane_available": status.get("pennylane_available"),
             "hybrid_trained": status.get("hybrid_trained"),
+            "traffic_mode": mode,
+            "disruptions_applied": bool(
+                disruptions
+                and (
+                    (isinstance(disruptions, dict) and disruptions.get("edges"))
+                    or getattr(disruptions, "edges", None)
+                )
+            ),
         },
         classical=classical_out,
         dijkstra=dijkstra_out,
         comparison=comparison,
+        feed=feed_meta,
     )

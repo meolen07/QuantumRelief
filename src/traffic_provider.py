@@ -3,11 +3,14 @@ Traffic / disruption feed providers.
 
 Same Live Escape pipeline for demo and production; only the feed differs:
 
-  Demo  → MockTrafficProvider  (simulated congestion / closure / flood)
+  Demo  → MockTrafficProvider + MockTrafficFeed  (simulated city conditions)
   Live  → LiveTrafficProvider  (TomTom / HERE stub — needs TRAFFIC_API_KEY)
 
 Configure with ``QR_TRAFFIC_MODE=demo|live`` (default ``demo``). Optional
 ``TRAFFIC_API_KEY`` unlocks the live stub path (still no paid API calls).
+
+Production swap: keep routing_service / Live Escape unchanged; only replace
+the provider returned by ``get_traffic_provider()``.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ class TrafficModeInfo:
     """UI / ops label for the active traffic feed."""
 
     mode: str  # "demo" | "live"
-    badge: str  # "Demo · mock traffic" | "Live · traffic API"
+    badge: str  # product-facing badge string
     provider_name: str
     live_ready: bool
     detail: str
@@ -109,6 +112,19 @@ class TrafficProvider(ABC):
         """Apply soft weight penalties in-place; sole apply entry for routing."""
         return apply_edge_disruptions(G, disruptions, multiplier=multiplier)
 
+    def current_conditions(self, G: nx.Graph, *, near_node: Any = None):
+        """
+        Named city conditions snapshot when the provider supports a feed.
+
+        Default: None (live stub until wired). Mock overrides.
+        """
+        _ = (G, near_node)
+        return None
+
+    def refresh_conditions(self, G: nx.Graph, *, near_node: Any = None):
+        """Rotate / refresh the feed snapshot when supported."""
+        return self.current_conditions(G, near_node=near_node)
+
     def mode_info(self) -> TrafficModeInfo:
         return TrafficModeInfo(
             mode=self.mode,
@@ -120,19 +136,32 @@ class TrafficProvider(ABC):
 
     def badge_label(self) -> str:
         if self.mode == "live":
-            return "Live · traffic API"
-        return "Demo · mock traffic"
+            return "Live conditions · traffic API"
+        return "Live conditions · simulated feed"
 
 
 class MockTrafficProvider(TrafficProvider):
     """
-    Production-shaped mock feed: wraps sample_random_disruptions /
-    sample_flood_corridor (and judge-pinned flood seeds via ``seed`` /
-    ``corridor_extra``).
+    Production-shaped mock feed:
+
+    - ``current_conditions`` / ``refresh_conditions`` → ``MockTrafficFeed``
+      city snapshot (incidents + merged ``EdgeDisruptionSet``)
+    - ``get_edge_disruptions`` still samples congestion / closure / flood for
+      manual overlays (and judge pins via ``seed`` / ``corridor_extra``)
     """
 
     name = "mock"
     mode = "demo"
+
+    def current_conditions(self, G: nx.Graph, *, near_node: Any = None):
+        from src.mock_traffic_feed import get_mock_traffic_feed
+
+        return get_mock_traffic_feed().current(G, near_node=near_node)
+
+    def refresh_conditions(self, G: nx.Graph, *, near_node: Any = None):
+        from src.mock_traffic_feed import get_mock_traffic_feed
+
+        return get_mock_traffic_feed().refresh(G, near_node=near_node)
 
     def get_edge_disruptions(
         self,
@@ -174,7 +203,10 @@ class MockTrafficProvider(TrafficProvider):
             badge=self.badge_label(),
             provider_name=self.name,
             live_ready=False,
-            detail="Mock congestion / closure / flood overlays (no API keys).",
+            detail=(
+                "Simulated Manila conditions catalog (congestion / closure / flood). "
+                "Swap to LiveTrafficProvider for production — same Escape pipeline."
+            ),
         )
 
 
@@ -212,7 +244,7 @@ class LiveTrafficProvider(TrafficProvider):
         if not self.is_configured:
             raise TrafficNotConfiguredError(
                 "Live traffic mode requires TRAFFIC_API_KEY (or QR_TRAFFIC_API_KEY). "
-                "Set QR_TRAFFIC_MODE=demo for mock congestion / flood overlays, "
+                "Set QR_TRAFFIC_MODE=demo for simulated city conditions, "
                 "or configure a traffic API key for the live stub."
             )
         # TODO: TomTom / HERE incident + flow → edge multipliers.
@@ -263,6 +295,7 @@ def get_traffic_provider(
     Singleton provider for the active ``QR_TRAFFIC_MODE``.
 
     Default is ``MockTrafficProvider`` (Cloud / judge-safe, no API keys).
+    Production: set ``QR_TRAFFIC_MODE=live`` (+ key) to swap the provider only.
     """
     global _provider, _provider_mode
     resolved = resolve_traffic_mode(mode)
@@ -300,5 +333,31 @@ def apply_provider_disruptions(
 
 
 def traffic_mode_badge(mode: Optional[str] = None) -> str:
-    """Short UI badge: ``Demo · mock traffic`` or ``Live · traffic API``."""
+    """Short UI badge: simulated feed vs live traffic API."""
     return get_traffic_provider(mode).badge_label()
+
+
+def active_feed_disruptions(
+    G: nx.Graph,
+    *,
+    near_node: Any = None,
+    refresh: bool = False,
+) -> Tuple[Optional[dict], Optional[Any]]:
+    """
+    Load (or refresh) the active provider's city conditions for routing.
+
+    Returns ``(edge_disruptions_serializable, snapshot_or_None)``.
+    In live mode without a wired client, returns ``(None, None)``.
+    """
+    prov = get_traffic_provider()
+    snap = (
+        prov.refresh_conditions(G, near_node=near_node)
+        if refresh
+        else prov.current_conditions(G, near_node=near_node)
+    )
+    if snap is None:
+        return None, None
+    disruptions = getattr(snap, "edge_disruptions", None)
+    if disruptions is None and hasattr(snap, "disruptions"):
+        disruptions = snap.disruptions.to_serializable()
+    return disruptions, snap
