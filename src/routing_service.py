@@ -362,28 +362,35 @@ def path_length_km(G: nx.Graph, path: Sequence, origin=None) -> float:
     return float(total)
 
 
+# Path-level hazard weight (km units). Light secondary vs closest-approach.
+# Training ``safety_loss`` still uses γ=0.35 on *normalized* neighbor scores.
+DEFAULT_PATH_HAZARD_GAMMA = 0.15
+
+
 def path_safety_metrics(
     G: nx.Graph,
     path: Sequence,
     epicenter_lonlat: Tuple[float, float],
     origin=None,
     *,
-    hazard_gamma: float = 0.35,
+    hazard_gamma: float = DEFAULT_PATH_HAZARD_GAMMA,
 ) -> Dict[str, float]:
     """
     Path-level safety from a rolled-out node sequence (reporting / UI).
 
     Primary score (higher = safer)::
 
-        safety_score = mean_epi_km − γ · mean(log1p(w_edge))
+        safety_score = min_epi_km − γ · mean(log1p(w_edge))
 
-    where ``mean_epi_km`` is the mean km distance of path nodes to the
-    epicenter and ``w_edge`` is the Algorithm-1 travel weight on each hop
-    (falls back to geometric length when weight is missing). Aligns with the
-    training aux term in ``src/safety_loss.py`` (farther from epi / lower
-    hazard inflation).
+    ``min_epi_km`` is the closest approach of any path node to the epicenter
+    (matches map intuition: skirting farther from red rings = safer). Mean
+    distance alone is misleading — a path that dives near the epi then runs
+    a long far-from-epi tail can inflate ``mean_epi_km`` while being visibly
+    less safe. ``w_edge`` is the Algorithm-1 travel weight on each hop
+    (falls back to geometric length when missing); γ is a light secondary
+    hazard penalty (default 0.15).
 
-    Also returns ``min_epi_km`` (closest approach) and the raw components.
+    Also returns ``mean_epi_km``, ``min_epi_km``, and the raw hazard term.
     """
     nan = float("nan")
     empty = {
@@ -434,7 +441,8 @@ def path_safety_metrics(
         haz_vals.append(float(np.log1p(max(float(w), 0.0))))
     mean_haz = float(np.mean(haz_vals)) if haz_vals else 0.0
     gamma = float(hazard_gamma)
-    score = float(mean_epi - gamma * mean_haz) if np.isfinite(mean_epi) else nan
+    # Closest approach is the primary visual/judge signal.
+    score = float(min_epi - gamma * mean_haz) if np.isfinite(min_epi) else nan
     return {
         "safety_score": score,
         "mean_epi_km": mean_epi,
@@ -769,7 +777,7 @@ def compare_three_way(
         classical_summary["overlap_vs_dijkstra_pct"] = float(c_overlap)
 
     # Path safety from rolled-out nodes on each engine's Algorithm-1 graph
-    # (higher = farther from epi / lower hazard inflation).
+    # (higher = farther closest approach / lower hazard inflation).
     h_safe = path_safety_metrics(
         h_env.G if h_env is not None else G, h_path, epicenter_lonlat
     )
