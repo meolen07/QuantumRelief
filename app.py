@@ -567,7 +567,7 @@ def _init_session(G, exits, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = (
-            "Chọn mode → click bản đồ để đặt điểm (hoặc dùng dropdown)."
+            "Select a mode → click the map to place a point (or use the dropdown)."
         )
 
 
@@ -634,7 +634,7 @@ def main():
     st.markdown(
         '<div class="qr-team">'
         '<span class="chip">Team 5 — Quantrio</span>'
-        '<span class="chip soft">QC4SG · SEA Hackathon</span>'
+        '<span class="chip soft">QC4SG · SEA Quantathon</span>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -729,7 +729,7 @@ def main():
 5. **Scrub time `t`** — watch red \(r_{epi}\) and gold \(r_{exit}\) expand
 6. **Compare metrics** — Hybrid should beat Classical and approach Dijkstra
 
-*Gợi ý:* PLACE mode → click bản đồ → Calculate → kéo slider `t`.
+*Tip:* PLACE mode → click the map → Calculate → drag the `t` slider.
             """
         )
         if st.button("Got it — hide next time", key="howto_ack"):
@@ -1378,7 +1378,7 @@ def main():
             )
             st.markdown(
                 f'<div class="qr-card{" win" if beats_classical or near_dij else ""}">'
-                f'<div class="label">Hackathon verdict</div>'
+                f'<div class="label">Quantathon verdict</div>'
                 f'<div class="value" style="font-size:1.35rem">{story}</div>'
                 f'<div class="sub">t={t_show} · honest path sums</div></div>',
                 unsafe_allow_html=True,
@@ -1473,7 +1473,7 @@ Calculate. Trained PHN reports ≈37.9%; a fresh demo init uses quantum_mix≈0.
 
     st.markdown(
         '<div class="qr-footer">'
-        "<span>Team 5 — Quantrio · QC4SG — SEA Hackathon</span>"
+        "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon</span>"
         "<span>Quantum Intelligence. Human Relief.</span>"
         "</div>",
         unsafe_allow_html=True,
