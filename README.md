@@ -25,14 +25,16 @@ A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Cl
 
 Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](https://arxiv.org/abs/2307.15682)* (Furubira → Manila).
 
-**Honest scope today:** Manila OSM + **simulated** dynamics (quake / exit-traffic rings). Real traffic feeds (TomTom / HERE) are a roadmap plug-in — not integrated in this demo.
+**Honest scope today:** Manila OSM + **Live conditions · simulated feed** (`MockTrafficProvider` + `MockTrafficFeed` — named city incidents: congestion / closure / flood). Same Live Escape app in production with `LiveTrafficProvider` (TomTom / HERE stub; set `QR_TRAFFIC_MODE=live` + `TRAFFIC_API_KEY`).
+
+**Architecture:** `Demo = production app + MockTrafficFeed` · `Production = same app + LiveTrafficProvider`
 
 **One surface**
 
 
 | Surface         | Audience                              | Role                                                                                                      |
 | --------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **Live Escape** | Citizens + gov demos (B2G2C flagship) | Your location → change the map (disruption and/or epi) → safest & fastest · Hybrid · Classical · Dijkstra |
+| **Live Escape** | Citizens + city ops / fleet (B2G2C)   | Conditions now → your trip → Hybrid · Classical · Dijkstra compare · Quantathon judge demo (secondary) |
 
 
 `src/god_view.py` remains in-repo for optional command-center experiments but is **not** wired into the Streamlit UI.
@@ -118,14 +120,17 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 - **Classical FiLM ablation** — **gold** overlay (same FiLM, no quantum branch)
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
 - **3-way metrics** — travel time, safety, exit reached, path overlap, quantum contribution, latency (ms)
-- **Auto-best exit** — silent ranking; one recommended-exit line in the panel
+- **Mock city feed** — named conditions snapshot (`as_of`, Manila time-of-day, incidents with Pasig / Fort / walls labels) via `MockTrafficFeed`
+- **Destination** — place mode **Start** / **Destination** (map click) **or** Best exit (recommended) **or** named Intramuros landmarks
+- **Reliability fallback** — if Hybrid travel > 1.25× Classical (or Hybrid fails / very slow), serve Classical as primary with “Hybrid deferred · showing Classical” (no HERO)
 - **Location** — Folium map click, snapped to nearest graph node (no address field)
-- **Road disruptions (first-class)** — Congestion (×5) / Closed corridor soft (×8); amber dashed overlay + edge count
+- **Traffic badge** — **Live conditions · simulated feed** (honest) vs live API stub
+- **Run judge demo** — secondary Quantathon path (collapsed): curated corridor + pinned flood + auto route
 - **Epicenter** — optional extreme hazard (**Random epicenter**); expanding red rings
-- **Dynamic hazards** — expanding r_{epi} / r_{exit} rings scrubbed by simulation time `t`
-- **Live Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel (Quantathon flagship)
-- **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
+- **Live Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel
+- **B2B API** — FastAPI `/api/v1/calculate_route` applies mock feed in demo; optional Classical / Dijkstra
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
+- **Cloud sync** — see [`CLOUD_UPLOAD.md`](CLOUD_UPLOAD.md)
 
 ---
 
@@ -135,6 +140,10 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 flowchart LR
   UX[Streamlit Live Escape] --> RS[routing_service]
   API[FastAPI B2B API] --> RS
+  TP[TrafficProvider] --> RS
+  Feed[MockTrafficFeed catalog] --> Mock
+  Mock[MockTrafficProvider demo] -.-> TP
+  Live[LiveTrafficProvider stub] -.-> TP
   RS --> H[Hybrid QML FiLM]
   RS --> C[Classical FiLM]
   RS --> D[Dijkstra oracle]
@@ -142,6 +151,8 @@ flowchart LR
   RS --> G[Intramuros GraphML]
   RS --> Dyn[Algorithm 1 dynamic weights]
 ```
+
+**One-liner:** Demo = production app + mock feed · Production = same app + live provider. Edge multipliers always flow Escape → `TrafficProvider` → `routing_service` → Algorithm 1.
 
 
 
@@ -153,6 +164,20 @@ flowchart LR
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
+# Badge shows: Live conditions · simulated feed (default — no API keys)
+```
+
+Switch traffic feed mode:
+
+```bash
+# Demo / Cloud / product (default) — MockTrafficFeed city conditions
+QR_TRAFFIC_MODE=demo streamlit run app.py
+
+# Live stub — fails gracefully without a key
+QR_TRAFFIC_MODE=live streamlit run app.py
+
+# Live stub with key present (empty overlay until TomTom/HERE is wired)
+QR_TRAFFIC_MODE=live TRAFFIC_API_KEY=your_key streamlit run app.py
 ```
 
 Optional API:
@@ -169,7 +194,8 @@ curl -s http://127.0.0.1:8000/api/v1/calculate_route \
     "start_coords": [14.5895, 120.9750],
     "epicenter_coords": [14.5850, 120.9780],
     "exit_coords": [14.5920, 120.9720],
-    "include_comparison": true
+    "include_comparison": true,
+    "use_mock_feed": true
   }'
 ```
 
@@ -179,23 +205,48 @@ Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM do
 
 ---
 
-## How to use — Live Escape (flagship demo)
+## How to use as a product
 
-**Framing:** the map is always dynamic. Earthquake is the optional extreme stress case — not the only story.
+Demo ≠ fake UI. **Demo = production Live Escape + `MockTrafficProvider` / `MockTrafficFeed`.**
 
-1. **Click the map** to set your location (apartment / trip start) — snapped to the nearest road node
-2. **Change the map** (encourage at least one):
-   - **Congestion** or **Closed corridor (soft)** — amber dashed soft costs; edge count shown
-   - and/or **Random epicenter** — extreme hazard rings
-3. Read the **Best exit** line (auto-recommended)
-4. Press **Find safest & fastest route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
-5. Scrub hazard time `**t`** when an epicenter is active — red r_{epi} / gold r_{exit} expand
-6. Read right-panel **3-way metrics**: travel, safety, quantum contribution, latency — **HERO** only when Hybrid wins
+### Step-by-step (Manila / city ops)
 
-Layout: left **~2/3** Folium map (fixed) · right **~1/3** scrollable controls + metrics.
+1. Open the app — **Conditions now** loads automatically from the simulated feed (scenario name + `as_of` + Manila time-of-day + named incidents). Badge: **Live conditions · simulated feed**.
+2. **Your trip** — toggle place mode **Start** / **Destination**, click the map (blue = start, gold flag = destination). Destination defaults to **Best exit (recommended)**; pick a named landmark anytime.
+3. **Route** — press **Find route · compare engines**. Active feed disruptions apply to Hybrid, Classical, and Dijkstra the same way.
+4. Read travel + safety in the panel. **HERO** appears only when Hybrid strictly wins (or travel-tie + higher safety). If Hybrid is catastrophic (>1.25× Classical), fails, or is very slow → **Hybrid deferred · showing Classical** (no HERO; Hybrid path faded).
+5. Optional: **Refresh feed** to rotate the city scenario catalog · manual congestion/flood overlays · collapsed **extreme hazard** epicenter · collapsed **Run judge demo** (Quantathon).
 
-On first load, a curated Hybrid-advantage scenario auto-runs when present (disruption nudge only). If none, a soft congestion corridor is seeded so amber corridors are visible without hunting.
+Layout: left **~2/3** Folium map · right **~1/3** panel. No God View, no address field.
 
+### Mock feed scenarios
+
+| Scenario id | What you see |
+| ----------- | ------------ |
+| `quiet_morning` | Light congestion · plaza rim (morning / night pool) |
+| `rush_hour_arterial` | Congestion · Fort / Padre Burgos approach |
+| `flood_pasig` | Flooded corridor · Pasig riverside (×12 soft) |
+| `closure_walls` / `closure_historic` | Soft closed walls / historic core |
+| `mixed_evening` | North Gate jam + east wall closure |
+| `night_quiet` | Sparse overnight traffic |
+| `judge_flood` | Pinned Quantathon flood (judge demo only) |
+
+Scenarios rotate by **Manila time-of-day** (morning / rush / midday / evening / night) plus a 5-minute deterministic bucket. **Refresh feed** advances the catalog manually.
+
+### Architecture swap
+
+| Mode | Provider | Env |
+| ---- | -------- | --- |
+| **Demo (default)** | `MockTrafficProvider` + `MockTrafficFeed` | `QR_TRAFFIC_MODE=demo` |
+| **Production** | `LiveTrafficProvider` (TomTom/HERE stub) | `QR_TRAFFIC_MODE=live` + `TRAFFIC_API_KEY` |
+
+Same Streamlit app, same `/api/v1/calculate_route` contract — only the feed provider changes.
+
+---
+
+## How to use — Quantathon judge path (secondary)
+
+Collapsed **Run judge demo**: curated advantage corridor + pinned flood + mild epi + auto Find route → cyan Hybrid · gold Classical · white Dijkstra → **HERO** only on Hybrid win.
 ---
 
 ## Project structure
@@ -205,7 +256,7 @@ QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
   requirements-api.txt     # FastAPI + uvicorn
-  app.py                   # Live Escape flagship (Folium 2D; Escape-only)
+  app.py                   # Live Escape product surface (Folium 2D; Escape-only)
   api.py                   # B2B Quantum Routing API
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
                            # + demo_scenarios.json + hard_seeds.json
@@ -218,7 +269,10 @@ QuantumRelief/
     safety_loss.py         # Safety aux loss (λ_safe · L_safe)
     quantum_hybrid.py      # PennyLane Hybrid PHN (+ quantum contribution %)
     routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
+    traffic_provider.py    # Mock vs Live provider (swap for production)
+    mock_traffic_feed.py   # Named city conditions + Manila time-of-day pools
     god_view.py            # Unused by app (optional command-center experiments)
+  CLOUD_UPLOAD.md          # Exact files + Streamlit Cloud verify checklist
   scripts/
     retrain_models.py
     find_advantage_scenarios.py
@@ -275,9 +329,9 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 
 | Horizon   | Focus                                                                                                                            |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **Now**   | Live Escape + Hybrid / Classical / Dijkstra · B2B `/api/v1/calculate_route` · simulated dynamics (disruption + optional quake) |
-| **Next**  | Plug-in live traffic / closure weights (TomTom / HERE) · multi-district graphs · fleet pilots                                    |
-| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Live Escape product                                           |
+| **Now**   | Live Escape + Hybrid / Classical / Dijkstra · B2B `/api/v1/calculate_route` · `MockTrafficProvider` (demo default) + optional quake |
+| **Next**  | Wire `LiveTrafficProvider` to TomTom / HERE · multi-district graphs · fleet pilots                                                    |
+| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Live Escape product                                                 |
 
 
 ---

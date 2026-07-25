@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -44,6 +44,8 @@ from src.dynamic_simulation import (
 from src.film_model import ensure_trained_model
 from src.graph_setup import (
     load_or_build_graph,
+    name_exit_landmark,
+    named_escape_landmarks,
     random_epicenter,
     select_exit_nodes,
 )
@@ -81,6 +83,16 @@ ORANGE_ACCENT = "#FF8A4C"
 DISRUPTION_COLOR = "#F5A623"  # amber — not purple
 
 MAP_H = 820  # concrete Folium px height (avoid % → black map)
+
+# Destination selectbox sentinel — keep Best exit as an option, not the only path.
+DEST_BEST = "__best_exit__"
+PLACE_START = "Start"
+PLACE_DEST = "Destination"
+
+# Reliability: Hybrid deferred when catastrophic vs Classical or very slow.
+HYBRID_CATASTROPHIC_RATIO = 1.25
+HYBRID_SLOW_MS = 45_000.0
+HYBRID_SLOW_VS_CLASSICAL = 8.0
 
 st.markdown(
     """
@@ -469,6 +481,7 @@ def _apply_advantage_scenario(G, exits, scenario: Dict[str, Any]) -> str:
     _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
     if dest is not None and dest in exits:
         st.session_state["dest_node"] = dest
+        st.session_state["dest_choice"] = dest
         st.session_state["recommended_exit"] = dest
         # Keep ranking in sync without overriding curated dest.
         try:
@@ -485,7 +498,7 @@ def _apply_advantage_scenario(G, exits, scenario: Dict[str, Any]) -> str:
         except Exception:
             st.session_state["exit_ranking"] = []
     else:
-        _refresh_exit_ranking(G, exits)
+        _refresh_exit_ranking(G, exits, adopt_best=True)
     m = scenario.get("metrics") or {}
     expected = ""
     if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
@@ -614,16 +627,25 @@ def _feed_incidents_html() -> str:
     as_of = snap.get("as_of") or "—"
     name = snap.get("scenario_name") or "City conditions"
     city = snap.get("city") or "Manila · Intramuros"
+    tod = snap.get("time_of_day_label") or ""
+    clock = snap.get("local_clock") or ""
+    tod_line = ""
+    if tod or clock:
+        tod_line = (
+            f'<br/><span style="color:#F5C542">{tod or "Local"}'
+            + (f" · {clock}" if clock else "")
+            + "</span>"
+        )
+    header = (
+        f'<div class="qr-asof"><strong style="color:#fff">{city}</strong> · '
+        f"{name}{tod_line}<br/>Last updated · {as_of}</div>"
+    )
     if not incidents:
         return (
-            f'<div class="qr-asof"><strong style="color:#fff">{city}</strong> · '
-            f"{name}<br/>Last updated · {as_of}</div>"
-            '<div class="qr-incident">No active incidents on the simulated feed.</div>'
+            header
+            + '<div class="qr-incident">No active incidents on the simulated feed.</div>'
         )
-    rows = [
-        f'<div class="qr-asof"><strong style="color:#fff">{city}</strong> · '
-        f"{name}<br/>Last updated · {as_of}</div>"
-    ]
+    rows = [header]
     for inc in incidents:
         kind = str(inc.get("kind") or "incident")
         label = str(inc.get("label") or kind)
@@ -646,6 +668,7 @@ def _clear_route_results():
         "path",
         "classical_path",
         "dij_path",
+        "hybrid_path_raw",
         "radii_trace",
         "qml_travel",
         "classical_travel",
@@ -674,13 +697,17 @@ def _clear_route_results():
         "compare_narrative",
         "latency_ms",
         "is_hybrid_route",
+        "hybrid_deferred",
+        "deferred_reason",
+        "deferred_note",
+        "primary_engine",
         "_step_reveal",
     ):
         st.session_state.pop(k, None)
 
 
-def _refresh_exit_ranking(G, exits) -> List[dict]:
-    """Auto-pick best exit silently; store one-line ranking meta."""
+def _refresh_exit_ranking(G, exits, *, adopt_best: bool = False) -> List[dict]:
+    """Rank exits under active feed; adopt best only when requested or Best exit mode."""
     start = st.session_state["start_node"]
     epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
     disruptions = st.session_state.get("edge_disruptions")
@@ -689,8 +716,103 @@ def _refresh_exit_ranking(G, exits) -> List[dict]:
     )
     st.session_state["exit_ranking"] = ranking
     st.session_state["recommended_exit"] = best
-    st.session_state["dest_node"] = best
+    choice = st.session_state.get("dest_choice", DEST_BEST)
+    if adopt_best or choice == DEST_BEST:
+        st.session_state["dest_node"] = best
+        st.session_state["dest_choice"] = DEST_BEST
+    elif choice in exits:
+        st.session_state["dest_node"] = choice
+    elif st.session_state.get("dest_node") not in exits:
+        st.session_state["dest_node"] = best
+        st.session_state["dest_choice"] = DEST_BEST
     return ranking
+
+
+def _set_destination(G, exits, node, *, via: str = "list") -> str:
+    """Pin destination to an exit/landmark node (clears Best-exit auto mode)."""
+    if node not in exits:
+        # Snap to nearest exit if a non-exit node was requested.
+        node = nearest_node(G, float(G.nodes[node]["y"]), float(G.nodes[node]["x"]), exits)
+    st.session_state["dest_node"] = node
+    st.session_state["dest_choice"] = node
+    _clear_route_results()
+    try:
+        info = name_exit_landmark(G, node)
+        label = info.get("label") or f"Exit node {node}"
+    except Exception:
+        label = f"Exit node {node}"
+    msg = f"Destination → {label} (node {node}) · set via {via}."
+    st.session_state["map_status"] = msg
+    return msg
+
+
+def _use_best_exit(G, exits) -> str:
+    """Switch destination mode back to Best exit (recommended)."""
+    st.session_state["dest_choice"] = DEST_BEST
+    _refresh_exit_ranking(G, exits, adopt_best=True)
+    best = st.session_state.get("recommended_exit", st.session_state["dest_node"])
+    _clear_route_results()
+    try:
+        info = name_exit_landmark(G, best)
+        label = info.get("label") or f"node {best}"
+    except Exception:
+        label = f"node {best}"
+    msg = f"Destination → Best exit (recommended) · {label}."
+    st.session_state["map_status"] = msg
+    return msg
+
+
+def _landmark_label_map(G, exits) -> Dict[Any, str]:
+    """node → short landmark name for destination UI."""
+    out: Dict[Any, str] = {}
+    try:
+        for row in named_escape_landmarks(G, exits):
+            out[row["node"]] = str(row["label"])
+    except Exception:
+        for i, ex in enumerate(exits, start=1):
+            out[ex] = f"Exit {i}"
+    return out
+
+
+def _should_defer_hybrid(
+    *,
+    hybrid_travel: float,
+    classical_travel: Optional[float],
+    hybrid_reached: bool,
+    classical_path,
+    latency_ms: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """
+    Reliability rule: defer Hybrid when catastrophic vs Classical, failed, or very slow.
+
+    Returns (defer, reason_code).
+    """
+    if classical_path is None or classical_travel is None:
+        return False, ""
+    ct = float(classical_travel)
+    ht = float(hybrid_travel)
+    if not hybrid_reached:
+        return True, "failed"
+    if ct > 1e-6 and ht > ct * HYBRID_CATASTROPHIC_RATIO:
+        return True, "catastrophic"
+    lat = latency_ms or {}
+    h_ms = lat.get("hybrid")
+    c_ms = lat.get("classical")
+    try:
+        h_ms_f = float(h_ms) if h_ms is not None else None
+        c_ms_f = float(c_ms) if c_ms is not None else None
+    except (TypeError, ValueError):
+        h_ms_f, c_ms_f = None, None
+    if h_ms_f is not None and h_ms_f >= HYBRID_SLOW_MS:
+        return True, "timeout"
+    if (
+        h_ms_f is not None
+        and c_ms_f is not None
+        and c_ms_f > 1.0
+        and h_ms_f >= max(15_000.0, c_ms_f * HYBRID_SLOW_VS_CLASSICAL)
+    ):
+        return True, "timeout"
+    return False, ""
 
 
 def _active_disruption_count() -> int:
@@ -704,8 +826,10 @@ def _disruption_summary() -> str:
     snap = st.session_state.get("feed_snapshot")
     if isinstance(snap, dict) and snap.get("scenario_name"):
         n = _active_disruption_count()
+        tod = snap.get("time_of_day_label") or ""
+        tod_bit = f" · {tod}" if tod else ""
         return (
-            f"{snap['scenario_name']} · {n} disrupted edges · "
+            f"{snap['scenario_name']}{tod_bit} · {n} disrupted edges · "
             f"feed {snap.get('feed', 'simulated')}"
         )
     raw = st.session_state.get("edge_disruptions")
@@ -895,6 +1019,7 @@ def _run_judge_demo(G, exits) -> str:
             dest = sc.get("dest_node")
             if dest is not None and dest in exits:
                 st.session_state["dest_node"] = dest
+                st.session_state["dest_choice"] = dest
                 st.session_state["recommended_exit"] = dest
                 try:
                     _, ranking = recommend_best_exit(
@@ -959,8 +1084,12 @@ def _init_session(G, exits, nodes, origin):
         n0 = st.session_state["start_node"]
         st.session_state["loc_lat"] = float(G.nodes[n0]["y"])
         st.session_state["loc_lon"] = float(G.nodes[n0]["x"])
+    if "dest_choice" not in st.session_state:
+        st.session_state["dest_choice"] = DEST_BEST
     if "dest_node" not in st.session_state:
         st.session_state["dest_node"] = exits[0]
+    if "place_mode" not in st.session_state:
+        st.session_state["place_mode"] = PLACE_START
     if "epi_lat" not in st.session_state:
         # Mild default epi far enough that everyday routing is feed-led.
         st.session_state["epi_lat"] = float(np.mean(ys)) - 0.0015
@@ -974,27 +1103,38 @@ def _init_session(G, exits, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = (
-            "Click the map to set your location, then find a route under live conditions."
+            "Set place mode (Start / Destination), click the map, then find a route."
         )
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
     if "feed_snapshot" not in st.session_state:
         st.session_state["feed_snapshot"] = None
     if "exit_ranking" not in st.session_state:
-        _refresh_exit_ranking(G, exits)
+        _refresh_exit_ranking(G, exits, adopt_best=True)
 
 
 def _apply_map_click(G, exits, lat: float, lon: float) -> str:
-    """Map click sets user location (snapped to nearest graph node)."""
+    """Map click sets start or destination based on place_mode."""
     _clear_route_results()
     st.session_state["map_center"] = [float(lat), float(lon)]
+    mode = st.session_state.get("place_mode", PLACE_START)
+    if mode == PLACE_DEST:
+        node = nearest_node(G, float(lat), float(lon), exits)
+        msg = _set_destination(G, exits, node, via="map click")
+        return msg
     _set_location(G, exits, lat, lon)
     _refresh_exit_ranking(G, exits)
     best = st.session_state.get("recommended_exit", st.session_state["dest_node"])
+    choice = st.session_state.get("dest_choice", DEST_BEST)
+    dest_note = (
+        "Best exit auto-updated"
+        if choice == DEST_BEST
+        else f"Destination held · node {st.session_state['dest_node']}"
+    )
     msg = (
-        f"Location → {st.session_state['loc_lat']:.5f}, "
+        f"Start → {st.session_state['loc_lat']:.5f}, "
         f"{st.session_state['loc_lon']:.5f} (node {st.session_state['start_node']}). "
-        f"Best exit → node {best}."
+        f"{dest_note} · recommended node {best}."
     )
     st.session_state["map_status"] = msg
     return msg
@@ -1181,10 +1321,34 @@ def main():
             '<div class="qr-panel"><h3>Your trip</h3></div>',
             unsafe_allow_html=True,
         )
+        place_mode = st.radio(
+            "Map click sets",
+            options=[PLACE_START, PLACE_DEST],
+            horizontal=True,
+            key="place_mode",
+            help="Toggle Start vs Destination, then click the map (snaps to the road graph).",
+        )
+        landmark_names = _landmark_label_map(G, exits)
+        start_lbl = "Start"
+        dest_lbl = landmark_names.get(
+            st.session_state["dest_node"], f"node {st.session_state['dest_node']}"
+        )
+        if st.session_state.get("dest_choice") == DEST_BEST:
+            dest_lbl = f"Best exit · {dest_lbl}"
         st.markdown(
-            f'<div class="qr-ro"><strong>Start</strong><br/>'
+            f'<div class="qr-ro"><strong>{start_lbl}</strong> · blue marker<br/>'
             f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-            f'<br/><span style="font-size:0.75rem">Click the map to set location</span></div>',
+            f'<br/><span style="font-size:0.75rem">'
+            f'Place mode: <b style="color:#00E5FF">{place_mode}</b> — click the map'
+            f"</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="qr-ro"><strong>Destination</strong> · gold flag<br/>'
+            f"{dest_lbl}"
+            f'<br/><span style="font-size:0.75rem">'
+            "Best exit (recommended) stays an option — or pick a named landmark / map click"
+            "</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -1192,27 +1356,47 @@ def main():
         exit_labels = {}
         for i, ex in enumerate(exits):
             row = next((r for r in ranking if r.get("exit_node") == ex), None)
+            base = landmark_names.get(ex, f"Exit {i + 1}")
             if row:
                 exit_labels[ex] = (
-                    f'{row.get("label", f"Exit {i+1}")} · score '
-                    f'{row.get("combined_score", 0):.0f}/100'
+                    f'{base} · score {row.get("combined_score", 0):.0f}/100'
                 )
             else:
-                exit_labels[ex] = f"Exit {i + 1} · node {ex}"
+                exit_labels[ex] = base
 
+        dest_options = [DEST_BEST] + list(exits)
+
+        def _fmt_dest(opt):
+            if opt == DEST_BEST:
+                best = st.session_state.get("recommended_exit")
+                bl = landmark_names.get(best, f"node {best}") if best is not None else "—"
+                return f"Best exit (recommended) · {bl}"
+            return exit_labels.get(opt, str(opt))
+
+        current_choice = st.session_state.get("dest_choice", DEST_BEST)
+        if current_choice not in dest_options:
+            current_choice = DEST_BEST
         dest_choice = st.selectbox(
             "Destination",
-            options=list(exits),
-            index=list(exits).index(st.session_state["dest_node"])
-            if st.session_state["dest_node"] in exits
-            else 0,
-            format_func=lambda n: exit_labels.get(n, str(n)),
-            help="Best exit is pre-selected from ranking under active feed disruptions",
+            options=dest_options,
+            index=dest_options.index(current_choice),
+            format_func=_fmt_dest,
+            help="Best exit ranks under active feed; pick a named Intramuros exit anytime.",
         )
-        if dest_choice != st.session_state.get("dest_node"):
-            st.session_state["dest_node"] = dest_choice
-            _clear_route_results()
+        if dest_choice == DEST_BEST:
+            if st.session_state.get("dest_choice") != DEST_BEST:
+                _use_best_exit(G, exits)
+            else:
+                st.session_state["dest_choice"] = DEST_BEST
+                best_n = st.session_state.get("recommended_exit")
+                if best_n is not None:
+                    st.session_state["dest_node"] = best_n
+        elif dest_choice != st.session_state.get("dest_node") or (
+            st.session_state.get("dest_choice") == DEST_BEST
+        ):
+            _set_destination(G, exits, dest_choice, via="landmark list")
         else:
+            st.session_state["dest_choice"] = dest_choice
             st.session_state["dest_node"] = dest_choice
 
         if ranking:
@@ -1235,11 +1419,7 @@ def main():
                 type="secondary",
                 key="btn_use_best_exit",
             ):
-                st.session_state["dest_node"] = best.get(
-                    "exit_node", st.session_state["dest_node"]
-                )
-                st.session_state["recommended_exit"] = st.session_state["dest_node"]
-                _clear_route_results()
+                _use_best_exit(G, exits)
                 st.rerun()
 
         with st.expander("Optional extreme hazard (earthquake)", expanded=False):
@@ -1352,16 +1532,12 @@ def main():
 
                     h = cmp["hybrid"]
                     path = h["path"]
+                    hybrid_path_raw = list(path) if path else None
                     radii_trace = h["radii_trace"]
                     qml_travel = h["travel_time"]
                     sample_x = h.get("sample_x")
                     route_meta = h["meta"]
-                    reached = bool(h["exit_reached"]) and path[-1] == dest
-
-                    if not path or len(path) < 2:
-                        raise RuntimeError(
-                            "No escape hops found — try another location or epicenter."
-                        )
+                    reached = bool(h["exit_reached"]) and bool(path) and path[-1] == dest
 
                     classical_path = None
                     classical_travel = 0.0
@@ -1376,6 +1552,18 @@ def main():
                         classical_reached = bool(c["exit_reached"])
                         classical_accuracy = float(
                             c.get("overlap_vs_dijkstra_pct") or 0.0
+                        )
+
+                    # Empty Hybrid path → try Classical before hard-failing.
+                    if (not path or len(path) < 2) and classical_path and len(classical_path) >= 2:
+                        path = classical_path
+                        radii_trace = (cmp.get("classical") or {}).get("radii_trace") or []
+                        reached = bool(classical_reached) and path[-1] == dest
+                        hybrid_fell_back = True
+
+                    if not path or len(path) < 2:
+                        raise RuntimeError(
+                            "No escape hops found — try another location or epicenter."
                         )
 
                     dij_path, dij_travel = (None, 0.0)
@@ -1407,11 +1595,68 @@ def main():
                             classical_path, dij_path
                         )
 
+                    latency_ms = cmp.get("latency_ms") or {}
+                    hybrid_deferred = bool(hybrid_fell_back)
+                    deferred_reason = "failed" if hybrid_fell_back else ""
+                    deferred_note = ""
+                    primary_engine = "hybrid"
+
+                    if use_hybrid and not hybrid_fell_back:
+                        defer, reason = _should_defer_hybrid(
+                            hybrid_travel=float(qml_travel),
+                            classical_travel=(
+                                float(classical_travel)
+                                if classical_path is not None
+                                else None
+                            ),
+                            hybrid_reached=bool(reached),
+                            classical_path=classical_path,
+                            latency_ms=latency_ms,
+                        )
+                        if defer and classical_path and len(classical_path) >= 2:
+                            hybrid_deferred = True
+                            deferred_reason = reason
+                            primary_engine = "classical"
+                            # Serve Classical as primary recommendation; keep Hybrid faded.
+                            path = classical_path
+                            radii_trace = (cmp.get("classical") or {}).get(
+                                "radii_trace"
+                            ) or radii_trace
+                            reached = bool(classical_reached) and path[-1] == dest
+                            label = "Classical FiLM (Hybrid deferred)"
+                            deferred_note = "Hybrid deferred · showing Classical"
+                            if reason == "catastrophic":
+                                deferred_note += (
+                                    f" · Hybrid travel >"
+                                    f"{HYBRID_CATASTROPHIC_RATIO:.2f}× Classical"
+                                )
+                            elif reason == "failed":
+                                deferred_note += " · Hybrid did not reach destination"
+                            elif reason == "timeout":
+                                deferred_note += " · Hybrid too slow this run"
+
+                    if hybrid_fell_back and classical_path and len(classical_path) >= 2:
+                        primary_engine = "classical"
+                        path = classical_path
+                        reached = bool(classical_reached)
+                        label = "Classical FiLM (Hybrid deferred)"
+                        if not deferred_note:
+                            if deferred_reason == "failed":
+                                deferred_note = (
+                                    "Hybrid deferred · showing Classical · Hybrid failed"
+                                )
+                            else:
+                                deferred_note = (
+                                    "Hybrid deferred · showing Classical · runtime"
+                                )
+                                deferred_reason = deferred_reason or "runtime"
+
                     st.session_state.update(
                         {
                             "path": path,
                             "classical_path": classical_path,
                             "dij_path": dij_path,
+                            "hybrid_path_raw": hybrid_path_raw,
                             "radii_trace": radii_trace,
                             "qml_travel": qml_travel,
                             "classical_travel": classical_travel,
@@ -1478,23 +1723,34 @@ def main():
                             "classical_reached": classical_reached,
                             "dij_reached": dij_reached,
                             "compare_narrative": cmp.get("narrative") or {},
-                            "latency_ms": cmp.get("latency_ms") or {},
+                            "latency_ms": latency_ms,
                             "demo_hybrid": bool(
                                 getattr(hero_model, "demo_mode", False)
                                 and use_hybrid
                                 and not hybrid_fell_back
+                                and not hybrid_deferred
                             ),
-                            "is_hybrid_route": bool(use_hybrid and not hybrid_fell_back),
+                            "is_hybrid_route": bool(
+                                use_hybrid
+                                and not hybrid_fell_back
+                                and not hybrid_deferred
+                            ),
+                            "hybrid_deferred": bool(hybrid_deferred),
+                            "deferred_reason": deferred_reason,
+                            "deferred_note": deferred_note,
+                            "primary_engine": primary_engine,
                             "epi": (epi_lon, epi_lat),
                             "start": start,
                             "dest": dest,
                         }
                     )
+                    toast_msg = (
+                        deferred_note
+                        if deferred_note
+                        else "Route ready — Hybrid vs Classical vs Dijkstra."
+                    )
                     try:
-                        st.toast(
-                            "Route ready — Hybrid vs Classical vs Dijkstra.",
-                            icon="✅",
-                        )
+                        st.toast(toast_msg, icon="✅")
                     except Exception:
                         pass
             except Exception as e:
@@ -1525,17 +1781,21 @@ def main():
             model_used = st.session_state.get("model_used", "Hybrid QML")
             narrative = st.session_state.get("compare_narrative") or {}
             reached = bool(st.session_state.get("exit_reached", False))
-            is_hybrid = "Hybrid" in str(model_used)
+            hybrid_deferred = bool(st.session_state.get("hybrid_deferred"))
+            deferred_note = st.session_state.get("deferred_note") or ""
+            is_hybrid = bool(st.session_state.get("is_hybrid_route")) and not hybrid_deferred
             classical_path = st.session_state.get("classical_path")
             dij_path = st.session_state.get("dij_path")
 
             # Strict travel win only; within 2% counts as a tie (not a "beat").
+            # Never HERO when Hybrid was deferred to Classical.
             beats_classical = False
             ties_classical = False
             safer_than_classical = False
             safety_win = False
             if (
-                classical_path is not None
+                not hybrid_deferred
+                and classical_path is not None
                 and classical_travel is not None
                 and reached
             ):
@@ -1556,23 +1816,40 @@ def main():
                     )
                     safety_win = bool(safer_than_classical and ties_classical)
             near_dij = (
-                dij_travel is not None
+                not hybrid_deferred
+                and dij_travel is not None
                 and dij_path
                 and reached
                 and qml_travel <= float(dij_travel) * 1.25
             )
-            if narrative.get("hybrid_beats_classical") is not None:
-                beats_classical = bool(narrative["hybrid_beats_classical"])
-            if narrative.get("hybrid_ties_classical") is not None:
-                ties_classical = bool(narrative["hybrid_ties_classical"])
-            if narrative.get("hybrid_safer_than_classical") is not None:
-                safer_than_classical = bool(narrative["hybrid_safer_than_classical"])
-            if narrative.get("hybrid_safety_win") is not None:
-                safety_win = bool(narrative["hybrid_safety_win"])
-            if narrative.get("hybrid_near_dijkstra") is not None:
-                near_dij = bool(narrative["hybrid_near_dijkstra"])
+            if not hybrid_deferred:
+                if narrative.get("hybrid_beats_classical") is not None:
+                    beats_classical = bool(narrative["hybrid_beats_classical"])
+                if narrative.get("hybrid_ties_classical") is not None:
+                    ties_classical = bool(narrative["hybrid_ties_classical"])
+                if narrative.get("hybrid_safer_than_classical") is not None:
+                    safer_than_classical = bool(narrative["hybrid_safer_than_classical"])
+                if narrative.get("hybrid_safety_win") is not None:
+                    safety_win = bool(narrative["hybrid_safety_win"])
+                if narrative.get("hybrid_near_dijkstra") is not None:
+                    near_dij = bool(narrative["hybrid_near_dijkstra"])
 
             st.markdown('<div class="qr-panel"><h3>Metrics</h3></div>', unsafe_allow_html=True)
+
+            if hybrid_deferred and deferred_note:
+                st.warning(deferred_note)
+                reason = st.session_state.get("deferred_reason") or ""
+                if reason == "catastrophic":
+                    st.caption(
+                        "Honest reliability note: this run hit the catastrophic band "
+                        f"(Hybrid travel > {HYBRID_CATASTROPHIC_RATIO:.2f}× Classical). "
+                        "Primary recommendation is Classical — HERO is not shown."
+                    )
+                elif reason:
+                    st.caption(
+                        "Primary recommendation is Classical this run. "
+                        "HERO is reserved for true Hybrid wins only."
+                    )
 
             radii_for_scrub = st.session_state.get("radii_trace")
             if radii_for_scrub and path and len(path) >= 2:
@@ -1598,18 +1875,25 @@ def main():
                 st.session_state.pop("_step_reveal", None)
 
             # Honest HERO: only when Hybrid strictly beats Classical on travel,
-            # or travel-tie (≤2%) with higher safety. Never decorate a loss.
-            show_hero = bool(beats_classical or safety_win)
+            # or travel-tie (≤2%) with higher safety. Never decorate a loss or fallback.
+            show_hero = bool(
+                not hybrid_deferred and (beats_classical or safety_win)
+            )
             win = " win" if show_hero else ""
             hero_pill = (
                 '<span class="qr-hero-pill">HERO</span>' if show_hero else ""
+            )
+            hybrid_sub = (
+                "Deferred this run · faded on map"
+                if hybrid_deferred
+                else "Cyan · local quantum-classical"
             )
             st.markdown(
                 f'<div class="qr-card hybrid{win}">'
                 f"{hero_pill}"
                 f'<div class="label">Hybrid travel</div>'
                 f'<div class="value accent">{qml_travel:.1f}</div>'
-                f'<div class="sub">Cyan · local quantum-classical</div></div>',
+                f'<div class="sub">{hybrid_sub}</div></div>',
                 unsafe_allow_html=True,
             )
             c_val = (
@@ -1622,13 +1906,18 @@ def main():
                 if dij_travel is not None and dij_path
                 else "—"
             )
+            classical_sub = (
+                "Primary recommendation · Hybrid deferred"
+                if hybrid_deferred
+                else "Gold ablation · white dashed oracle"
+            )
             st.markdown(
-                f'<div class="qr-card classical">'
+                f'<div class="qr-card classical{" win" if hybrid_deferred else ""}">'
                 f'<div class="label">Classical · Dijkstra</div>'
                 f'<div class="value gold" style="font-size:1.35rem">{c_val}'
                 f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
                 f'<span class="dij">{d_val}</span></div>'
-                f'<div class="sub">Gold ablation · white dashed oracle</div></div>',
+                f'<div class="sub">{classical_sub}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1675,7 +1964,9 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            if beats_classical and near_dij:
+            if hybrid_deferred:
+                story = deferred_note or "Hybrid deferred · showing Classical"
+            elif beats_classical and near_dij:
                 story = "Hybrid beats Classical · near Dijkstra"
             elif beats_classical:
                 story = "Hybrid beats Classical"
@@ -1692,7 +1983,7 @@ def main():
             else:
                 story = f"{model_used} · local inference"
             st.markdown(
-                f'<div class="qr-card{" win" if beats_classical or safety_win or near_dij else ""}">'
+                f'<div class="qr-card{" win" if (not hybrid_deferred) and (beats_classical or safety_win or near_dij) else ""}">'
                 f'<div class="label">Verdict</div>'
                 f'<div class="value" style="font-size:1.05rem">{story}</div></div>',
                 unsafe_allow_html=True,
@@ -1729,8 +2020,9 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
         else:
             st.info(
-                "① Check **Conditions now** · ② click the map for your start · "
-                "③ pick destination · ④ **Find route · compare engines**."
+                "① Check **Conditions now** · ② set place mode **Start** / **Destination** "
+                "and click the map · ③ pick Best exit or a named landmark · "
+                "④ **Find route · compare engines**."
             )
 
         st.markdown(
@@ -1748,11 +2040,18 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         path = st.session_state.get("path")
         classical_path = st.session_state.get("classical_path")
         dij_path = st.session_state.get("dij_path")
+        hybrid_path_raw = st.session_state.get("hybrid_path_raw")
+        hybrid_deferred = bool(st.session_state.get("hybrid_deferred"))
         radii_trace = st.session_state.get("radii_trace")
         start_draw = st.session_state["start_node"]
         dest_draw = st.session_state["dest_node"]
         epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
         ranking = st.session_state.get("exit_ranking") or []
+        place_mode = st.session_state.get("place_mode", PLACE_START)
+        st.caption(
+            f"Map click → **{place_mode}** · blue = Start · gold flag = Destination"
+            + (" · faded cyan = deferred Hybrid" if hybrid_deferred else "")
+        )
 
         # Live scrubber t drives r_epi / rings (same damage_radius as Algorithm 1).
         step_reveal = st.session_state.get("_step_reveal")
@@ -1839,18 +2138,44 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             folium.Marker(
                 [epi[1], epi[0]],
                 icon=folium.Icon(color="red", icon="warning-sign"),
+                tooltip="Epicenter (optional hazard)",
             )
         ).add_to(m)
         _no_click(
             folium.Marker(
                 [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
                 icon=folium.Icon(color="blue", icon="home"),
+                tooltip="Start",
             )
         ).add_to(m)
         _no_click(
             folium.Marker(
                 [exit_lat, exit_lon],
                 icon=folium.Icon(color="orange", icon="flag"),
+                tooltip="Destination",
+            )
+        ).add_to(m)
+        # Distinct start / destination halo markers (clear even if icons collide).
+        _no_click(
+            folium.CircleMarker(
+                [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
+                radius=9,
+                color="#00E5FF",
+                weight=3,
+                fill=True,
+                fill_color="#0a0f1e",
+                fill_opacity=0.9,
+            )
+        ).add_to(m)
+        _no_click(
+            folium.CircleMarker(
+                [exit_lat, exit_lon],
+                radius=9,
+                color="#F5C542",
+                weight=3,
+                fill=True,
+                fill_color="#F5C542",
+                fill_opacity=0.85,
             )
         ).add_to(m)
 
@@ -1866,40 +2191,70 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
             ).add_to(m)
 
-        if classical_path and len(classical_path) >= 2:
-            coords_c = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path]
-            _no_click(
-                folium.PolyLine(
-                    coords_c,
-                    color=CLASSICAL_ROUTE_COLOR,
-                    weight=4,
-                    opacity=0.88,
-                )
-            ).add_to(m)
-
-        if path and len(path) >= 2:
-            end_i = step_reveal if step_reveal is not None else len(path) - 1
-            partial = path[: end_i + 1]
-            coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
-            _no_click(
-                folium.PolyLine(
-                    coords,
-                    color=HYBRID_ROUTE_COLOR,
-                    weight=6,
-                    opacity=0.95,
-                )
-            ).add_to(m)
-            # Endpoints only — fewer CircleMarkers = smaller Folium payload on Cloud.
-            for n in (partial[0], partial[-1]) if len(partial) >= 2 else partial:
+        # Primary recommendation path + comparison overlays.
+        if hybrid_deferred:
+            # Classical is primary (thick gold); Hybrid kept faded for honesty.
+            if classical_path and len(classical_path) >= 2:
+                coords_c = [
+                    [G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path
+                ]
                 _no_click(
-                    folium.CircleMarker(
-                        [G.nodes[n]["y"], G.nodes[n]["x"]],
-                        radius=5,
-                        color=HYBRID_ROUTE_COLOR,
-                        fill=True,
-                        fill_opacity=0.95,
+                    folium.PolyLine(
+                        coords_c,
+                        color=CLASSICAL_ROUTE_COLOR,
+                        weight=6,
+                        opacity=0.95,
                     )
                 ).add_to(m)
+            faded = hybrid_path_raw or []
+            if faded and len(faded) >= 2:
+                coords_h = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in faded]
+                _no_click(
+                    folium.PolyLine(
+                        coords_h,
+                        color=HYBRID_ROUTE_COLOR,
+                        weight=3,
+                        opacity=0.35,
+                        dash_array="4 10",
+                    )
+                ).add_to(m)
+        else:
+            if classical_path and len(classical_path) >= 2:
+                coords_c = [
+                    [G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path
+                ]
+                _no_click(
+                    folium.PolyLine(
+                        coords_c,
+                        color=CLASSICAL_ROUTE_COLOR,
+                        weight=4,
+                        opacity=0.88,
+                    )
+                ).add_to(m)
+
+            if path and len(path) >= 2:
+                end_i = step_reveal if step_reveal is not None else len(path) - 1
+                partial = path[: end_i + 1]
+                coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
+                _no_click(
+                    folium.PolyLine(
+                        coords,
+                        color=HYBRID_ROUTE_COLOR,
+                        weight=6,
+                        opacity=0.95,
+                    )
+                ).add_to(m)
+                # Endpoints only — fewer CircleMarkers = smaller Folium payload on Cloud.
+                for n in (partial[0], partial[-1]) if len(partial) >= 2 else partial:
+                    _no_click(
+                        folium.CircleMarker(
+                            [G.nodes[n]["y"], G.nodes[n]["x"]],
+                            radius=5,
+                            color=HYBRID_ROUTE_COLOR,
+                            fill=True,
+                            fill_opacity=0.95,
+                        )
+                    ).add_to(m)
 
         map_data = st_folium(
             m,
