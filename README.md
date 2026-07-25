@@ -35,18 +35,18 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 ## Results (latest hard retrain)
 
-From `data/retrain_report.json` — hard fine-tune (`λ_safe=0.35`, hard seeds) on serving Hybrid; fair eval **28** trials (hard_seeds + random).
+From `data/retrain_report.json` — balance hard fine-tune (`λ_safe=0.32`, hard_frac=0.45, best **F16**) from `film_hybrid_pre_balance.pt`; fair eval **32** trials (hard_seeds + random).
 
 | Metric | Hybrid | Classical | Dijkstra |
 | --- | --- | --- | --- |
-| Val accuracy | ≈ **0.883** | ≈ **0.886** | — |
-| Mean travel time | ≈ **13.65** | ≈ **14.40** | ≈ **12.29** |
-| Mean safety score (min-epi) | ≈ **0.49** | ≈ **0.45** | ≈ **0.56** |
+| Val accuracy | ≈ **0.920** | ≈ **0.886** | — |
+| Mean travel time | ≈ **12.83** | ≈ **13.89** | ≈ **12.19** |
+| Mean safety score (min-epi) | ≈ **0.51** | ≈ **0.46** | ≈ **0.56** |
 | Exit reached | **100%** | **100%** | **100%** |
-| Path overlap vs Dijkstra | ≈ **59.0%** | ≈ **49.3%** | — |
+| Path overlap vs Dijkstra | ≈ **55.6%** | ≈ **51.0%** | — |
 | Quantum contribution | ≈ **77.6%** | — | — |
 
-Hybrid **mean travel ≤ Classical** (Δ ≈ −0.75) with **~78.6%** strict travel wins and **~78.6%** near Dijkstra. Mean **min-epi** safety also edges Classical (Δ ≈ +0.04; ~53.6% trial safety wins). Serving: `models/film_hybrid.pt` (promoted from hardft).
+Hybrid **mean travel ≤ Classical** (Δ ≈ −1.06) with **~75%** travel wins and **~81%** near Dijkstra. Mean **min-epi** safety also edges Classical (Δ ≈ +0.045). Catastrophic blowups (H travel > 1.25× C) ≈ **9.4%** (down from ~10.7%). **Promote: YES** — `film_hybrid_hardft.pt` → serving `models/film_hybrid.pt`. UI **HERO** badge only when Hybrid strictly beats Classical on travel, or travel-tie + higher safety.
 
 **Safety score** (path rollout, **min-epi based**, higher = safer; UI-scale ~0.05–2.0):
 
@@ -59,7 +59,7 @@ safety_score = min_epi_km − 0.15 · mean(log1p(w_edge))
 - `w_edge` — Algorithm-1 travel weight on each hop (light secondary hazard penalty)  
 - Training uses a related idea via `λ_safe · L_safe` in `src/safety_loss.py` (soft preference for safer next hops; Dijkstra CE stays primary)
 
-**Promotion rule:** copy candidate → `film_hybrid.pt` only when mean travel ≤ Classical, **or** travel within 2% of Classical **and** mean safety clearly higher.
+**Promotion rule:** copy candidate → `film_hybrid.pt` only when mean travel ≤ Classical (or travel within 2% + higher safety), mean safety ≥ Classical, and catastrophic rate (H>1.25×C) does not worsen.
 
 ### Quantum Contribution (≈77.6%)
 
