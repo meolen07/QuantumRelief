@@ -232,7 +232,7 @@ def run_evacuation_batch(
         "success_rate": 0.0,
         "avg_travel": 0.0,
         "sample_x": None,
-        "quantum_contribution": 0.0,
+        "quantum_contribution": None,
         "n_agents_requested": 0,
         "elapsed_s": 0.0,
     }
@@ -327,7 +327,7 @@ def run_evacuation_batch(
     success_rate = (100.0 * n_success / n_routed) if n_routed else 0.0
     avg_travel = float(np.mean(travels)) if travels else 0.0
     q_contrib = (
-        estimate_quantum_contribution_pct(model, sample_x) if model is not None else 0.0
+        estimate_quantum_contribution_pct(model, sample_x) if model is not None else None
     )
     elapsed_s = float(time.perf_counter() - t0)
 
@@ -343,7 +343,7 @@ def run_evacuation_batch(
         "success_rate": float(success_rate),
         "avg_travel": avg_travel,
         "sample_x": sample_x,
-        "quantum_contribution": float(q_contrib),
+        "quantum_contribution": q_contrib,
         "n_agents_requested": n_agents,
         "elapsed_s": elapsed_s,
     }
@@ -809,11 +809,17 @@ def _render_live_metrics(
     success = float(result.get("success_rate") or 0.0)
     elapsed = float(result.get("elapsed_s") or 0.0)
 
-    q_contrib = float(result.get("quantum_contribution") or 0.0)
-    if q_contrib <= 0 and hybrid_model is not None:
-        q_contrib = float(estimate_quantum_contribution_pct(hybrid_model))
-    if not pennylane_ok and q_contrib <= 0:
-        q_contrib = 37.9
+    q_contrib = result.get("quantum_contribution")
+    if q_contrib is not None:
+        try:
+            q_contrib = float(q_contrib)
+        except (TypeError, ValueError):
+            q_contrib = None
+    if (q_contrib is None or q_contrib <= 0) and hybrid_model is not None:
+        q_contrib = estimate_quantum_contribution_pct(hybrid_model)
+    if q_contrib is None or q_contrib <= 0:
+        # Prefer honest N/A over a forged 0.0%; last-resort narrative only if stack down
+        q_contrib = None if pennylane_ok else 37.9
 
     alert = congestion_alert_status(
         float(hazard_meta.get("flood_level", controls.get("flood_level", 0))),
@@ -841,11 +847,18 @@ def _render_live_metrics(
             delta=f"{result.get('n_success', 0)} exits reached",
         )
     with m4:
-        st.metric(
-            "Quantum Contribution",
-            f"{q_contrib:.1f}%",
-            delta="PHN combine · live",
-        )
+        if q_contrib is not None and q_contrib > 0:
+            st.metric(
+                "Quantum Contribution",
+                f"{q_contrib:.1f}%",
+                delta="PHN combine · live",
+            )
+        else:
+            st.metric(
+                "Quantum Contribution",
+                "N/A",
+                delta="PHN combine · unavailable",
+            )
 
     a1, a2 = st.columns([2, 1])
     with a1:

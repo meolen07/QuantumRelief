@@ -206,6 +206,34 @@ def _init_combine_prefer_classical(model: HybridFiLMNetwork, quantum_mix: float 
             model.combine.weight[i, N_OUTPUTS + i] = quantum_mix
 
 
+def soft_rebalance_combine(
+    model: HybridFiLMNetwork,
+    target_quantum_mix: float = 0.50,
+    blend: float = 0.55,
+) -> float:
+    """
+    Softly pull PHN combine columns toward a stable classical/quantum mix.
+
+    High quantum_contrib (~80%+) correlates with next-hop-OK / travel-worse
+    rollouts: quantum dominates early hops and compounds off Dijkstra. Blending
+    toward ~50% keeps a real quantum branch without erasing trained weights.
+    Returns the post-blend contribution %.
+    """
+    target = float(np.clip(target_quantum_mix, 0.05, 0.95))
+    alpha = float(np.clip(blend, 0.0, 1.0))
+    with torch.no_grad():
+        w = model.combine.weight
+        eye_c = torch.zeros_like(w)
+        for i in range(N_OUTPUTS):
+            eye_c[i, i] = 1.0 - target
+            eye_c[i, N_OUTPUTS + i] = target
+        # Preserve learned scale; blend direction of columns
+        scale = w.abs().mean().clamp_min(1e-3)
+        target_w = eye_c * scale * 2.0  # eye entries ~0.5 → similar mean |W|
+        w.copy_((1.0 - alpha) * w + alpha * target_w)
+    return float(estimate_quantum_contribution_pct(model) or 0.0)
+
+
 def load_hybrid_model(
     checkpoint: Path = HYBRID_CHECKPOINT,
     device: Optional[str] = None,
@@ -213,6 +241,7 @@ def load_hybrid_model(
     """Load hybrid checkpoint, or build from classical weights if missing."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = HybridFiLMNetwork()
+    model._ckpt_quantum_contrib_pct = None  # type: ignore[attr-defined]
     if checkpoint.exists():
         payload = torch.load(checkpoint, map_location=device, weights_only=False)
         state = (
@@ -224,6 +253,34 @@ def load_hybrid_model(
         model.demo_mode = bool(
             payload.get("demo_mode", True) if isinstance(payload, dict) else True
         )
+        if isinstance(payload, dict):
+            metrics = payload.get("metrics") or {}
+            if "quantum_contrib_pct" in metrics:
+                try:
+                    model._ckpt_quantum_contrib_pct = float(  # type: ignore[attr-defined]
+                        metrics["quantum_contrib_pct"]
+                    )
+                except (TypeError, ValueError):
+                    pass
+        # Heal combine if quantum columns vanished (corrupt / partial load)
+        w = model.combine.weight.detach()
+        c_mag = float(w[:, :N_OUTPUTS].abs().mean().item())
+        q_mag = float(w[:, N_OUTPUTS:].abs().mean().item())
+        if c_mag < 1e-8 and q_mag < 1e-8:
+            _init_combine_prefer_classical(model, quantum_mix=0.453)
+            print("[QuantumRelief] Healed all-zero PHN combine → demo mix 0.453.")
+        elif q_mag < 1e-8:
+            meta_mix = model._ckpt_quantum_contrib_pct  # type: ignore[attr-defined]
+            mix = (
+                max(0.05, min(0.95, float(meta_mix) / 100.0))
+                if meta_mix is not None
+                else 0.453
+            )
+            _init_combine_prefer_classical(model, quantum_mix=mix)
+            print(
+                "[QuantumRelief] Healed zeroed PHN quantum combine columns "
+                f"(mix={mix:.3f})."
+            )
         print(f"[QuantumRelief] Loaded hybrid checkpoint from {checkpoint}")
     else:
         # Seed classical branch from trained FiLM; soft quantum mix
@@ -248,15 +305,28 @@ def train_hybrid_model(
     device: Optional[str] = None,
     checkpoint: Path = HYBRID_CHECKPOINT,
     seed_classical: bool = True,
+    target_quantum_mix: float = 0.50,
+    combine_reg: float = 0.06,
+    lambda_safe: float = 0.35,
+    feature_mean: Optional[np.ndarray] = None,
+    feature_std: Optional[np.ndarray] = None,
 ) -> Tuple[HybridFiLMNetwork, Dict[str, float]]:
     """
     Train the Parallel Hybrid Network end-to-end for the hackathon demo.
 
     Phase A — freeze classical FiLM; train quantum branch + PHN combine.
     Phase B — light full-network fine-tune so Hybrid actually leads routing.
+
+    ``combine_reg`` softly keeps PHN quantum share near ``target_quantum_mix``;
+    unconstrained Phase A previously drifted to ~80%+ q% and hurt mean travel.
+
+    ``lambda_safe`` adds an auxiliary preference for safer next hops
+    (farther from epicenter / lower edge hazard) while Dijkstra CE stays primary.
     """
     import torch.nn.functional as F
     from torch.utils.data import DataLoader, TensorDataset
+
+    from .safety_loss import total_routing_loss
 
     if not PENNYLANE_AVAILABLE:
         raise RuntimeError("PennyLane required to train Hybrid QML.")
@@ -273,7 +343,8 @@ def train_hybrid_model(
         classical = load_film_model(device=device)
         model.classical.load_state_dict(classical.state_dict())
         print("[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt")
-    _init_combine_prefer_classical(model, quantum_mix=0.453)
+    init_mix = float(np.clip(target_quantum_mix, 0.05, 0.95))
+    _init_combine_prefer_classical(model, quantum_mix=init_mix)
 
     n = len(y)
     idx = np.random.default_rng(0).permutation(n)
@@ -292,6 +363,15 @@ def train_hybrid_model(
     train_loader = make_loader(tr, True)
     val_loader = make_loader(va, False)
 
+    target_mix = float(np.clip(target_quantum_mix, 0.05, 0.95))
+
+    def _combine_mix_penalty() -> torch.Tensor:
+        w = model.combine.weight
+        c_mag = w[:, :N_OUTPUTS].abs().mean()
+        q_mag = w[:, N_OUTPUTS:].abs().mean()
+        q_share = q_mag / (c_mag + q_mag + 1e-8)
+        return (q_share - target_mix) ** 2
+
     def _run_epoch(opt, train: bool) -> Tuple[float, float]:
         if train:
             model.train()
@@ -303,29 +383,49 @@ def train_hybrid_model(
             for xb, yb in (train_loader if train else val_loader):
                 xb, yb = xb.to(device), yb.to(device)
                 logits = model(xb)
-                loss = F.cross_entropy(logits, yb)
                 if train:
+                    loss, _, _ = total_routing_loss(
+                        logits,
+                        yb,
+                        xb,
+                        lambda_safe=lambda_safe,
+                        mean=feature_mean,
+                        std=feature_std,
+                    )
+                    if combine_reg > 0:
+                        loss = loss + combine_reg * _combine_mix_penalty()
                     opt.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     opt.step()
+                else:
+                    # Val tracks Dijkstra CE fidelity for checkpointing.
+                    loss = F.cross_entropy(logits, yb)
                 total_loss += loss.item() * len(yb)
                 correct += (logits.argmax(1) == yb).sum().item()
                 total += len(yb)
         return total_loss / max(total, 1), correct / max(total, 1)
 
-    metrics: Dict[str, float] = {}
+    metrics: Dict[str, float] = {"lambda_safe": float(lambda_safe)}
     best_val = float("inf")
     best_state = None
 
     def _save_ckpt(tag: str, epoch: int, phase: str) -> None:
         """Periodic + best checkpoints so long trains survive interrupts."""
+        live_metrics = dict(metrics)
+        # Persist live combine share so UI can fall back mid-train / after reload
+        try:
+            live_metrics["quantum_contrib_pct"] = float(
+                estimate_quantum_contribution_pct(model) or 0.0
+            )
+        except Exception:
+            pass
         snap = {
             "model_state": {
                 k: v.cpu().clone() for k, v in model.state_dict().items()
             },
             "demo_mode": False,
-            "metrics": dict(metrics),
+            "metrics": live_metrics,
             "phase": phase,
             "epoch": epoch,
             "note": (
@@ -333,6 +433,7 @@ def train_hybrid_model(
                 "classical FiLM ∥ PennyLane quantum FiLM — hackathon hero."
             ),
             "arch": {"n_qubits": N_QUBITS, "n_outputs": N_OUTPUTS},
+            "lambda_safe": float(lambda_safe),
         }
         torch.save(snap, checkpoint)
         # Also keep a rolling mid-train copy
@@ -347,7 +448,9 @@ def train_hybrid_model(
     opt = torch.optim.Adam(q_params, lr=lr_quantum, weight_decay=1e-5)
     print(
         f"[QuantumRelief] Hybrid Phase A — quantum+combine "
-        f"({epochs_quantum} epochs, batch={batch_size})…"
+        f"({epochs_quantum} epochs, batch={batch_size}, "
+        f"combine_reg={combine_reg}, target_q_mix={target_mix:.2f}, "
+        f"λ_safe={lambda_safe:.2f})…"
     )
     for epoch in range(1, epochs_quantum + 1):
         tr_loss, tr_acc = _run_epoch(opt, train=True)
@@ -367,13 +470,22 @@ def train_hybrid_model(
         elif epoch % 3 == 0 or epoch == epochs_quantum:
             _save_ckpt(f"periodic-A{epoch}", epoch, "A")
 
-    # --- Phase B: full fine-tune ---
+    # --- Phase B: full fine-tune (classical at lower LR to keep route quality) ---
     for p in model.parameters():
         p.requires_grad = True
-    opt = torch.optim.Adam(model.parameters(), lr=lr_finetune, weight_decay=1e-5)
+    # Differential LR: seeded classical FiLM is already strong on travel time;
+    # aggressive Phase-B updates previously raised next-hop CE but hurt rollouts.
+    opt = torch.optim.Adam(
+        [
+            {"params": model.classical.parameters(), "lr": lr_finetune * 0.15},
+            {"params": model.quantum.parameters(), "lr": lr_finetune},
+            {"params": model.combine.parameters(), "lr": lr_finetune * 1.5},
+        ],
+        weight_decay=1e-5,
+    )
     print(
         f"[QuantumRelief] Hybrid Phase B — full PHN fine-tune "
-        f"({epochs_finetune} epochs)…"
+        f"({epochs_finetune} epochs, classical_lr×0.15, λ_safe={lambda_safe:.2f})…"
     )
     for epoch in range(1, epochs_finetune + 1):
         tr_loss, tr_acc = _run_epoch(opt, train=True)
@@ -403,7 +515,23 @@ def train_hybrid_model(
     metrics["train_acc"] = float(
         metrics.get("phase_b_train_acc", metrics.get("phase_a_train_acc", 0.0))
     )
-    metrics["quantum_contrib_pct"] = estimate_quantum_contribution_pct(model)
+    q_raw = float(estimate_quantum_contribution_pct(model) or 0.0)
+    metrics["quantum_contrib_pct_pre_rebalance"] = q_raw
+    # If combine still drifted high, soft-pull toward the route-stable mix
+    if q_raw > 65.0:
+        q_bal = soft_rebalance_combine(
+            model, target_quantum_mix=target_mix, blend=0.65
+        )
+        metrics["combine_rebalanced"] = True
+        metrics["quantum_contrib_pct"] = q_bal
+        print(
+            f"[QuantumRelief] Post-AB soft-rebalance: q% {q_raw:.1f} → {q_bal:.1f}"
+        )
+    else:
+        metrics["combine_rebalanced"] = False
+        metrics["quantum_contrib_pct"] = q_raw
+    metrics["target_quantum_mix"] = target_mix
+    metrics["combine_reg"] = float(combine_reg)
 
     payload = {
         "model_state": model.state_dict(),
@@ -425,6 +553,249 @@ def train_hybrid_model(
     print(
         f"[QuantumRelief] Saved trained Hybrid QML → {checkpoint} "
         f"(val_acc={metrics['val_acc']:.3f}, q_contrib={metrics['quantum_contrib_pct']:.1f}%)"
+    )
+    model.eval()
+    return model, metrics
+
+
+def finetune_hybrid_on_hard(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight: Optional[np.ndarray] = None,
+    epochs: int = 24,
+    batch_size: int = 8,
+    lr: float = 8e-3,
+    target_quantum_mix: float = 0.50,
+    rebalance_blend: float = 0.55,
+    combine_reg: float = 0.08,
+    freeze_classical: bool = True,
+    init_checkpoint: Optional[Path] = None,
+    checkpoint: Path = HYBRID_CHECKPOINT,
+    device: Optional[str] = None,
+    lambda_safe: float = 0.35,
+    feature_mean: Optional[np.ndarray] = None,
+    feature_std: Optional[np.ndarray] = None,
+) -> Tuple[HybridFiLMNetwork, Dict[str, float]]:
+    """
+    Targeted Hybrid fine-tune for Classical-gap / Dijkstra hard hops.
+
+    - Soft-rebalance PHN combine toward ``target_quantum_mix`` (stability)
+    - Freeze classical FiLM (default); train quantum + combine at higher LR
+    - Optional per-sample weights (hard hops >> pool hops)
+    - Light combine regularizer toward the target mix so quantum_contrib
+      does not climb back to unstable ~80%+
+    - Optional ``lambda_safe`` aux term (same as Phase A/B)
+    """
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+
+    from .safety_loss import total_routing_loss
+
+    if not PENNYLANE_AVAILABLE:
+        raise RuntimeError("PennyLane required to fine-tune Hybrid QML.")
+
+    ensure_dirs()
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if device.startswith("cuda"):
+        print("[QuantumRelief] Hybrid fine-tune uses CPU (PennyLane default.qubit).")
+        device = "cpu"
+
+    src = init_checkpoint or checkpoint
+    if src.exists():
+        model = load_hybrid_model(src, device=device)
+        print(f"[QuantumRelief] Fine-tune starting from {src.name}")
+    else:
+        model = HybridFiLMNetwork().to(device)
+        if MODEL_CHECKPOINT.exists():
+            classical = load_film_model(device=device)
+            model.classical.load_state_dict(classical.state_dict())
+        _init_combine_prefer_classical(model, quantum_mix=target_quantum_mix)
+        print("[QuantumRelief] Fine-tune: no prior hybrid — seeded classical + init mix")
+
+    q_before = float(estimate_quantum_contribution_pct(model) or 0.0)
+    q_after = soft_rebalance_combine(
+        model, target_quantum_mix=target_quantum_mix, blend=rebalance_blend
+    )
+    print(
+        f"[QuantumRelief] Combine soft-rebalance: q% {q_before:.1f} → {q_after:.1f} "
+        f"(target_mix={target_quantum_mix:.2f}, blend={rebalance_blend:.2f})"
+    )
+
+    for p in model.classical.parameters():
+        p.requires_grad = not freeze_classical
+    for p in model.quantum.parameters():
+        p.requires_grad = True
+    for p in model.combine.parameters():
+        p.requires_grad = True
+
+    n = len(y)
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
+    if sample_weight is None:
+        sample_weight = np.ones(n, dtype=np.float64)
+    else:
+        sample_weight = np.asarray(sample_weight, dtype=np.float64)
+        if len(sample_weight) != n:
+            raise ValueError("sample_weight length must match y")
+        sample_weight = np.maximum(sample_weight, 1e-6)
+
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(n)
+    split = int(0.85 * n)
+    tr, va = idx[:split], idx[split:]
+
+    xb_all = torch.tensor(X, dtype=torch.float32)
+    yb_all = torch.tensor(y, dtype=torch.long)
+    w_all = torch.tensor(sample_weight, dtype=torch.float64)
+
+    train_ds = TensorDataset(xb_all[tr], yb_all[tr], w_all[tr].float())
+    val_ds = TensorDataset(xb_all[va], yb_all[va], w_all[va].float())
+    sampler = WeightedRandomSampler(
+        weights=w_all[tr], num_samples=len(tr), replacement=True
+    )
+    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+
+    param_groups = [
+        {"params": model.quantum.parameters(), "lr": lr},
+        {"params": model.combine.parameters(), "lr": lr * 1.25},
+    ]
+    if not freeze_classical:
+        param_groups.append(
+            {"params": model.classical.parameters(), "lr": lr * 0.1}
+        )
+    opt = torch.optim.Adam(param_groups, weight_decay=1e-5)
+
+    target = float(np.clip(target_quantum_mix, 0.05, 0.95))
+
+    def _combine_mix_penalty() -> torch.Tensor:
+        w = model.combine.weight
+        c_mag = w[:, :N_OUTPUTS].abs().mean()
+        q_mag = w[:, N_OUTPUTS:].abs().mean()
+        total = c_mag + q_mag + 1e-8
+        q_share = q_mag / total
+        return (q_share - target) ** 2
+
+    def _run_epoch(train: bool) -> Tuple[float, float]:
+        if train:
+            model.train()
+        else:
+            model.eval()
+        total_loss, correct, total = 0.0, 0, 0
+        loader = train_loader if train else val_loader
+        ctx = torch.enable_grad() if train else torch.no_grad()
+        with ctx:
+            for xb, yb, wb in loader:
+                xb, yb, wb = xb.to(device), yb.to(device), wb.to(device)
+                logits = model(xb)
+                if train:
+                    loss, _, _ = total_routing_loss(
+                        logits,
+                        yb,
+                        xb,
+                        lambda_safe=lambda_safe,
+                        mean=feature_mean,
+                        std=feature_std,
+                        sample_weight=wb,
+                    )
+                    if combine_reg > 0:
+                        loss = loss + combine_reg * _combine_mix_penalty()
+                    opt.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for p in model.parameters() if p.requires_grad], 5.0
+                    )
+                    opt.step()
+                else:
+                    ce = F.cross_entropy(logits, yb, reduction="none")
+                    loss = (ce * wb).sum() / wb.sum().clamp_min(1e-6)
+                total_loss += float(loss.item()) * len(yb)
+                correct += (logits.argmax(1) == yb).sum().item()
+                total += len(yb)
+        return total_loss / max(total, 1), correct / max(total, 1)
+
+    metrics: Dict[str, float] = {
+        "q_contrib_before": q_before,
+        "q_contrib_rebalanced": q_after,
+        "target_quantum_mix": target,
+        "freeze_classical": float(freeze_classical),
+        "lambda_safe": float(lambda_safe),
+    }
+    best_val = float("inf")
+    best_state = None
+    best_acc = 0.0
+
+    print(
+        f"[QuantumRelief] Hard fine-tune — quantum+combine "
+        f"({epochs} epochs, lr={lr}, freeze_classical={freeze_classical}, "
+        f"combine_reg={combine_reg}, λ_safe={lambda_safe:.2f})…"
+    )
+    for epoch in range(1, epochs + 1):
+        tr_loss, tr_acc = _run_epoch(train=True)
+        va_loss, va_acc = _run_epoch(train=False)
+        q_now = float(estimate_quantum_contribution_pct(model) or 0.0)
+        if epoch == 1 or epoch % 2 == 0 or epoch == epochs:
+            print(
+                f"  F {epoch:3d}/{epochs}  "
+                f"train_acc={tr_acc:.3f}  val_acc={va_acc:.3f}  "
+                f"val_loss={va_loss:.4f}  q%={q_now:.1f}"
+            )
+        # Prefer lower val CE; break ties with higher val acc
+        improved = va_loss < best_val - 1e-5 or (
+            abs(va_loss - best_val) <= 1e-5 and va_acc > best_acc
+        )
+        if improved:
+            best_val = va_loss
+            best_acc = va_acc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            metrics["val_acc"] = float(va_acc)
+            metrics["train_acc"] = float(tr_acc)
+            metrics["best_val_loss"] = float(best_val)
+            metrics["best_epoch"] = float(epoch)
+            metrics["quantum_contrib_pct"] = q_now
+            snap = {
+                "model_state": best_state,
+                "demo_mode": False,
+                "metrics": dict(metrics),
+                "phase": "finetune_hard",
+                "epoch": epoch,
+                "note": "Hard-hop Hybrid fine-tune (frozen classical, rebalanced combine).",
+                "arch": {"n_qubits": N_QUBITS, "n_outputs": N_OUTPUTS},
+            }
+            torch.save(snap, checkpoint)
+            mid = checkpoint.with_name(checkpoint.stem + "_partial.pt")
+            torch.save(snap, mid)
+            print(f"  [ckpt] saved best-F{epoch} → {checkpoint.name}")
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model.demo_mode = False
+    metrics["quantum_contrib_pct"] = float(
+        estimate_quantum_contribution_pct(model) or 0.0
+    )
+    metrics["combine_rebalanced"] = True
+    payload = {
+        "model_state": model.state_dict(),
+        "demo_mode": False,
+        "metrics": metrics,
+        "note": (
+            "Hard-hop fine-tuned Hybrid QML PHN. Classical frozen; "
+            "quantum+combine trained on Dijkstra hard-seed hops with combine rebalance."
+        ),
+        "arch": {"n_qubits": N_QUBITS, "n_outputs": N_OUTPUTS},
+    }
+    torch.save(payload, checkpoint)
+    partial = checkpoint.with_name(checkpoint.stem + "_partial.pt")
+    if partial.exists():
+        try:
+            partial.unlink()
+        except OSError:
+            pass
+    print(
+        f"[QuantumRelief] Saved hard fine-tune → {checkpoint} "
+        f"(val_acc={metrics.get('val_acc', 0):.3f}, "
+        f"q_contrib={metrics['quantum_contrib_pct']:.1f}%)"
     )
     model.eval()
     return model, metrics
@@ -477,11 +848,42 @@ QUANTUM_CONTRIBUTION_FORMULA = (
 )
 
 
+def _phn_combine_weight(model) -> Optional[torch.Tensor]:
+    """
+    Duck-type PHN combine.weight (5×10).
+
+    Avoid ``isinstance(..., HybridFiLMNetwork)`` — Streamlit ``@st.cache_resource``
+    keeps a model instance across module reloads, so isinstance becomes False and
+    used to return a misleading 0.0% contribution.
+    """
+    combine = getattr(model, "combine", None)
+    w = getattr(combine, "weight", None) if combine is not None else None
+    if w is None or not hasattr(w, "shape") or len(w.shape) != 2:
+        return None
+    if int(w.shape[0]) != N_OUTPUTS or int(w.shape[1]) != N_OUTPUTS * 2:
+        return None
+    return w
+
+
+def _meta_quantum_contrib_pct(model) -> Optional[float]:
+    """Last-known % from checkpoint metrics attached at load time."""
+    raw = getattr(model, "_ckpt_quantum_contrib_pct", None)
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val < 0.0 or val > 100.0:
+        return None
+    return val
+
+
 def estimate_quantum_contribution_pct(
     model: HybridFiLMNetwork,
     x: Optional[np.ndarray] = None,
     device: Optional[str] = None,
-) -> float:
+) -> Optional[float]:
     """
     Live Quantum Contribution % from the PHN combine layer.
 
@@ -492,21 +894,33 @@ def estimate_quantum_contribution_pct(
         q_mag = mean(|W[:, 5:10]|) # PennyLane quantum branch columns
         Quantum Contribution % = 100 * q_mag / (c_mag + q_mag)
 
-    The optional ``x`` argument is reserved for diagnostics (unused by the
-    weight-based metric). Trained checkpoints report ≈37.9%; demo init uses
-    quantum_mix≈0.453 → ≈45.3%. Falls back to 45.3 if the quantum stack is down.
+    Returns ``None`` when the model is not a PHN (e.g. Classical FiLM) so the UI
+    can show N/A instead of a misleading 0.0%. Uses checkpoint meta when quantum
+    combine columns are collapsed. Falls back to 45.3 if the quantum stack is down
+    but combine weights are present. Trained checkpoints report ≈37–42%; demo
+    init uses quantum_mix≈0.453 → ≈45.3%.
     """
-    if not isinstance(model, HybridFiLMNetwork):
-        return 0.0
-    if not model.quantum.available or getattr(model, "_classical_only", False):
-        return 45.3
+    w = _phn_combine_weight(model)
+    if w is None:
+        return _meta_quantum_contrib_pct(model)
 
-    w = model.combine.weight.detach()
+    quantum = getattr(model, "quantum", None)
+    available = bool(getattr(quantum, "available", False)) if quantum is not None else False
+    if not available or getattr(model, "_classical_only", False):
+        meta = _meta_quantum_contrib_pct(model)
+        return meta if meta is not None else 45.3
+
+    w = w.detach()
     c_mag = float(w[:, :N_OUTPUTS].abs().mean().item())
     q_mag = float(w[:, N_OUTPUTS:].abs().mean().item())
     total = c_mag + q_mag
     if total < 1e-8:
-        return 45.3
+        meta = _meta_quantum_contrib_pct(model)
+        return meta if meta is not None else 45.3
+    # Quantum columns ~0 with classical mass still present → not a real "0% PHN"
+    if q_mag < 1e-8:
+        meta = _meta_quantum_contrib_pct(model)
+        return meta  # None → UI shows N/A (never fake 0.0% for a Hybrid card)
     return float(100.0 * q_mag / total)
 
 

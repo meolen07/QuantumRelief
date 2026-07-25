@@ -236,6 +236,77 @@ def load_hard_seeds(
     return seeds
 
 
+def collect_hard_seed_samples(
+    mean: np.ndarray,
+    std: np.ndarray,
+    *,
+    intensities: Sequence[float] = (1.0, 2.0),
+    repeats: int = 4,
+    seeds_path: Optional[Path] = None,
+    seed: int = 0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Collect Dijkstra-labelled trajectories for Classical-failure hard seeds.
+
+    Normalises with the provided dataset mean/std so samples can be mixed into
+    an existing ``routing_dataset.npz`` Hybrid subset. Includes intensity 1.0
+    (matches inference) and 2.0 (matches hard training labels) to close the
+    next-hop-acc vs full-route travel gap.
+    """
+    G = load_or_build_graph()
+    exits = select_exit_nodes(G, n_exits=3, seed=42)
+    seeds = load_hard_seeds(path=seeds_path, G=G)
+    if not seeds:
+        return (
+            np.zeros((0, INPUT_DIM), dtype=np.float32),
+            np.zeros((0,), dtype=np.int64),
+        )
+
+    mean = np.asarray(mean, dtype=np.float32)
+    std = np.asarray(std, dtype=np.float32)
+    std_safe = np.maximum(std, 1e-6)
+    X_list: List[np.ndarray] = []
+    y_list: List[int] = []
+    for _ in range(max(1, int(repeats))):
+        for intensity in intensities:
+            for spec in seeds:
+                try:
+                    start = _coerce_node_id(G, spec["start_node"])
+                    dest = _coerce_node_id(G, spec["dest_node"])
+                except KeyError:
+                    continue
+                epi_ll = (float(spec["epi_lon"]), float(spec["epi_lat"]))
+                samples = collect_episode(
+                    G,
+                    start,
+                    dest,
+                    epi_ll,
+                    exits,
+                    hazard_intensity=float(intensity),
+                )
+                for x, y in samples:
+                    X_list.append(x)
+                    y_list.append(int(y))
+
+    if not X_list:
+        return (
+            np.zeros((0, INPUT_DIM), dtype=np.float32),
+            np.zeros((0,), dtype=np.int64),
+        )
+
+    X_raw = np.stack(X_list, axis=0).astype(np.float32)
+    Xn = (X_raw - mean) / std_safe
+    y = np.asarray(y_list, dtype=np.int64)
+    # Light shuffle so oversampled copies aren't contiguous in every batch
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(y))
+    print(
+        f"[QuantumRelief] Hard-seed hybrid oversample: {len(y)} samples "
+        f"(seeds={len(seeds)}, repeats={repeats}, intensities={list(intensities)})"
+    )
+    return Xn[order], y[order]
+
+
 def write_hard_seeds_from_scenarios(
     scenarios_path: Path = DEMO_SCENARIOS_PATH,
     out_path: Path = HARD_SEEDS_PATH,

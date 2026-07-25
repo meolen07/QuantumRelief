@@ -277,7 +277,7 @@ def slide_01_title(prs: Presentation):
     ptf.word_wrap = True
     ptf.paragraphs[0].alignment = PP_ALIGN.CENTER
     run = ptf.paragraphs[0].add_run()
-    run.text = "TEAM 5 — QUANTRIO  |  QC4SG — SEA HACKATHON"
+    run.text = "TEAM 5 — QUANTRIO  |  QC4SG — SEA QUANTATHON 2026"
     _set_run(run, size=11, bold=True, color=ORANGE)
 
     title = _textbox(slide, MARGIN, Inches(2.2), Inches(10), Inches(1.1))
@@ -844,7 +844,7 @@ def slide_10_conclusion(prs: Presentation):
     )
     _add_text(
         tf,
-        "Team 5 — Quantrio  |  QC4SG — SEA Hackathon",
+        "Team 5 — Quantrio  |  QC4SG — SEA Quantathon 2026",
         size=14,
         color=MUTED,
         align=PP_ALIGN.CENTER,

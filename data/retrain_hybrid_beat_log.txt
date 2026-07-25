@@ -1,0 +1,101 @@
+=== QuantumRelief hackathon retrain (3-way) ===
+{
+  "pennylane_available": true,
+  "n_qubits": 7,
+  "n_film_qubits": 2,
+  "n_main_qubits": 5,
+  "device": "default.qubit",
+  "hybrid_trained": false,
+  "note": "PennyLane available \u2014 Hybrid QML (PHN) inference enabled. Upload a trained film_hybrid.pt for full HQNN weights."
+}
+
+[0/4] Preparing Classical-failure hard seeds…
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+
+[1/4] Reusing dataset → /Users/nguyenhuynhmailinh/QuantumRelief/data/routing_dataset.npz
+  samples: 18932  X=(18932, 36)  hard_meta=1  seed_eps=40
+
+[2/4] Skipping Classical — reusing /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+
+[3/4] Training Hybrid QML PHN (phase A=16, B=10, max_samples=8000, hard_repeats=10)…
+[QuantumRelief] Loading cached graph from /Users/nguyenhuynhmailinh/QuantumRelief/data/manila_intramuros_graph.graphml
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+[QuantumRelief] Hard-seed hybrid oversample: 2883 samples (seeds=5, repeats=10, intensities=[1.0, 2.0])
+  hybrid train subset: 8000 samples (hard=2800, random/pool=5200, pool_size=18932)
+[QuantumRelief] Loaded FiLM checkpoint from /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt
+[QuantumRelief] Hybrid Phase A — quantum+combine (16 epochs, batch=8, combine_reg=0.06, target_q_mix=0.50)…
+=== QuantumRelief hackathon retrain (3-way) ===
+{
+  "pennylane_available": true,
+  "n_qubits": 7,
+  "n_film_qubits": 2,
+  "n_main_qubits": 5,
+  "device": "default.qubit",
+  "hybrid_trained": false,
+  "note": "PennyLane available \u2014 Hybrid QML (PHN) inference enabled. Upload a trained film_hybrid.pt for full HQNN weights."
+}
+
+[0/4] Preparing Classical-failure hard seeds…
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+
+[1/4] Reusing dataset → /Users/nguyenhuynhmailinh/QuantumRelief/data/routing_dataset.npz
+  samples: 18932  X=(18932, 36)  hard_meta=1  seed_eps=40
+
+[2/4] Skipping Classical — reusing /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+
+[3/4] Training Hybrid QML PHN (phase A=16, B=10, max_samples=8000, hard_repeats=10)…
+[QuantumRelief] Loading cached graph from /Users/nguyenhuynhmailinh/QuantumRelief/data/manila_intramuros_graph.graphml
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+[QuantumRelief] Hard-seed hybrid oversample: 2875 samples (seeds=5, repeats=10, intensities=[1.0, 2.0])
+  hybrid train subset: 8000 samples (hard=2800, random/pool=5200, pool_size=18932)
+[QuantumRelief] Loaded FiLM checkpoint from /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt
+[QuantumRelief] Hybrid Phase A — quantum+combine (16 epochs, batch=8, combine_reg=0.06, target_q_mix=0.50)…
+=== QuantumRelief hackathon retrain (3-way) ===
+{
+  "pennylane_available": true,
+  "n_qubits": 7,
+  "n_film_qubits": 2,
+  "n_main_qubits": 5,
+  "device": "default.qubit",
+  "hybrid_trained": false,
+  "note": "PennyLane available \u2014 Hybrid QML (PHN) inference enabled. Upload a trained film_hybrid.pt for full HQNN weights."
+}
+
+[0/4] Preparing Classical-failure hard seeds…
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+
+[1/4] Reusing dataset → /Users/nguyenhuynhmailinh/QuantumRelief/data/routing_dataset.npz
+  samples: 18932  X=(18932, 36)  hard_meta=1  seed_eps=40
+
+[2/4] Skipping Classical — reusing /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+
+[3/4] Training Hybrid QML PHN (phase A=16, B=10, max_samples=8000, hard_repeats=10)…
+[QuantumRelief] Loading cached graph from /Users/nguyenhuynhmailinh/QuantumRelief/data/manila_intramuros_graph.graphml
+[QuantumRelief] Loaded 5 hard seeds from /Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json
+[QuantumRelief] Hard-seed hybrid oversample: 2842 samples (seeds=5, repeats=10, intensities=[1.0, 2.0])
+  hybrid train subset: 8000 samples (hard=2800, random/pool=5200, pool_size=18932)
+[QuantumRelief] Loaded FiLM checkpoint from /Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt
+[QuantumRelief] Seeded Hybrid classical branch from film_classical.pt
+[QuantumRelief] Hybrid Phase A — quantum+combine (16 epochs, batch=8, combine_reg=0.06, target_q_mix=0.50)…
+  A   1/16  train_acc=0.854  val_acc=0.885  val_loss=0.3108
+  [ckpt] saved best-A1 → film_hybrid.pt
+  A   2/16  train_acc=0.854  val_acc=0.890  val_loss=0.3085
+  [ckpt] saved best-A2 → film_hybrid.pt
+  [ckpt] saved best-A3 → film_hybrid.pt
+  A   4/16  train_acc=0.858  val_acc=0.889  val_loss=0.2947
+  [ckpt] saved best-A4 → film_hybrid.pt
+  A   6/16  train_acc=0.860  val_acc=0.887  val_loss=0.3117
+  [ckpt] saved periodic-A6 → film_hybrid.pt
+  A   8/16  train_acc=0.863  val_acc=0.889  val_loss=0.3048
+  [ckpt] saved best-A9 → film_hybrid.pt
+  A  10/16  train_acc=0.865  val_acc=0.895  val_loss=0.2970
+  [ckpt] saved best-A11 → film_hybrid.pt
+  A  12/16  train_acc=0.864  val_acc=0.892  val_loss=0.2982
+  [ckpt] saved periodic-A12 → film_hybrid.pt
+  A  14/16  train_acc=0.859  val_acc=0.890  val_loss=0.2931
+  [ckpt] saved periodic-A15 → film_hybrid.pt
+  A  16/16  train_acc=0.857  val_acc=0.890  val_loss=0.2973
+  [ckpt] saved periodic-A16 → film_hybrid.pt
+[QuantumRelief] Hybrid Phase B — full PHN fine-tune (10 epochs, classical_lr×0.15)…

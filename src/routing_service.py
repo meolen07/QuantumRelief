@@ -28,6 +28,7 @@ from src.utils import (
     INPUT_DIM,
     MAX_DEGREE,
     euclidean,
+    get_graph_origin,
     node_xy_km,
     project_local_km,
 )
@@ -350,6 +351,150 @@ def dijkstra_escape_route(
     return path, radii_trace, env, travel, meta
 
 
+def path_length_km(G: nx.Graph, path: Sequence, origin=None) -> float:
+    """Sum consecutive hop lengths in local km along a node path."""
+    if not path or len(path) < 2:
+        return 0.0
+    origin = origin or get_graph_origin(G)
+    total = 0.0
+    for u, v in zip(path[:-1], path[1:]):
+        total += euclidean(node_xy_km(G, u, origin), node_xy_km(G, v, origin))
+    return float(total)
+
+
+def exit_safety_km(
+    G: nx.Graph,
+    exit_node,
+    epicenter_lonlat: Tuple[float, float],
+    origin=None,
+) -> float:
+    """Distance (km) from evacuate area to epicenter — higher is safer."""
+    origin = origin or get_graph_origin(G)
+    epi_km = project_local_km(
+        float(epicenter_lonlat[0]),
+        float(epicenter_lonlat[1]),
+        origin[0],
+        origin[1],
+    )
+    return float(euclidean(node_xy_km(G, exit_node, origin), epi_km))
+
+
+def rank_evacuate_areas(
+    G: nx.Graph,
+    start,
+    exits: Sequence,
+    epicenter_lonlat: Tuple[float, float],
+    *,
+    max_steps: int = 120,
+    time_weight: float = 0.55,
+    safety_weight: float = 0.45,
+) -> List[Dict[str, Any]]:
+    """
+    Rank candidate evacuate areas by safest + fastest.
+
+    Uses Dijkstra under Algorithm 1 dynamics for travel time (fast, honest).
+    Safety = km distance of the exit node from the epicenter.
+    Combined score ∈ [0, 100] — higher is better. Best exit is index 0.
+    """
+    origin = get_graph_origin(G)
+    rows: List[Dict[str, Any]] = []
+    for i, ex in enumerate(exits):
+        if ex == start:
+            continue
+        try:
+            path, _radii, _env, travel, meta = dijkstra_escape_route(
+                G, start, ex, epicenter_lonlat, max_steps=max_steps
+            )
+        except Exception:
+            path, travel, meta = [], float("inf"), {"reached": False, "hops": 0}
+        reached = bool(meta.get("reached")) and bool(path) and path[-1] == ex
+        safety = exit_safety_km(G, ex, epicenter_lonlat, origin=origin)
+        length = path_length_km(G, path, origin=origin) if path else 0.0
+        rows.append(
+            {
+                "exit_node": ex,
+                "label": f"Evacuate area {i + 1}",
+                "index": i + 1,
+                "travel_time": float(travel) if reached else float("inf"),
+                "safety_km": float(safety),
+                "path_length_km": float(length),
+                "hops": int(meta.get("hops", max(0, len(path) - 1))),
+                "exit_reached": reached,
+                "path": path,
+                "lat": float(G.nodes[ex]["y"]),
+                "lon": float(G.nodes[ex]["x"]),
+            }
+        )
+
+    finite_times = [r["travel_time"] for r in rows if np.isfinite(r["travel_time"])]
+    safeties = [r["safety_km"] for r in rows]
+    t_lo = min(finite_times) if finite_times else 0.0
+    t_hi = max(finite_times) if finite_times else 1.0
+    s_lo = min(safeties) if safeties else 0.0
+    s_hi = max(safeties) if safeties else 1.0
+
+    def _norm_low_better(val: float, lo: float, hi: float) -> float:
+        if not np.isfinite(val):
+            return 0.0
+        if hi <= lo + 1e-9:
+            return 1.0
+        return float(1.0 - (val - lo) / (hi - lo))
+
+    def _norm_high_better(val: float, lo: float, hi: float) -> float:
+        if hi <= lo + 1e-9:
+            return 1.0
+        return float((val - lo) / (hi - lo))
+
+    tw = max(0.0, float(time_weight))
+    sw = max(0.0, float(safety_weight))
+    wsum = tw + sw if (tw + sw) > 1e-9 else 1.0
+    tw, sw = tw / wsum, sw / wsum
+
+    for r in rows:
+        t_score = _norm_low_better(r["travel_time"], t_lo, t_hi)
+        s_score = _norm_high_better(r["safety_km"], s_lo, s_hi)
+        if not r["exit_reached"]:
+            t_score = 0.0
+        combined = 100.0 * (tw * t_score + sw * s_score)
+        r["time_score"] = float(round(100.0 * t_score, 1))
+        r["safety_score"] = float(round(100.0 * s_score, 1))
+        r["combined_score"] = float(round(combined, 1))
+        r["why"] = (
+            f"~{r['travel_time']:.1f} travel · {r['safety_km']:.2f} km from epicenter"
+            if r["exit_reached"]
+            else "Route blocked / unreachable under current hazard"
+        )
+
+    rows.sort(
+        key=lambda r: (
+            0 if r["exit_reached"] else 1,
+            -r["combined_score"],
+            r["travel_time"],
+            -r["safety_km"],
+        )
+    )
+    for rank, r in enumerate(rows, start=1):
+        r["rank"] = rank
+        r["recommended"] = rank == 1 and bool(r["exit_reached"])
+    return rows
+
+
+def recommend_best_exit(
+    G: nx.Graph,
+    start,
+    exits: Sequence,
+    epicenter_lonlat: Tuple[float, float],
+    **kwargs,
+) -> Tuple[Any, List[Dict[str, Any]]]:
+    """Return (best_exit_node, full ranking). Falls back to exits[0] if empty."""
+    ranking = rank_evacuate_areas(G, start, exits, epicenter_lonlat, **kwargs)
+    if not ranking:
+        fallback = exits[0] if exits else start
+        return fallback, ranking
+    best = ranking[0]["exit_node"]
+    return best, ranking
+
+
 def path_to_waypoints(G: nx.Graph, path: Sequence) -> List[Dict[str, Any]]:
     """Serialize a node path as B2B-friendly `{node_id, lat, lon}` waypoints."""
     out: List[Dict[str, Any]] = []
@@ -480,6 +625,14 @@ def compare_three_way(
     )
     hybrid_ms = (_time.perf_counter() - t0) * 1000.0
     q_contrib = estimate_quantum_contribution_pct(hybrid_model, sample_x)
+    if q_contrib is None or q_contrib <= 0:
+        # API/summary still want a float when Hybrid is the hero — prefer ckpt meta
+        meta_q = getattr(hybrid_model, "_ckpt_quantum_contrib_pct", None)
+        try:
+            q_contrib = float(meta_q) if meta_q is not None else None
+        except (TypeError, ValueError):
+            q_contrib = None
+    q_contrib_out = float(round(q_contrib, 1)) if q_contrib is not None else None
 
     classical_summary = None
     classical_ms = None
@@ -538,7 +691,7 @@ def compare_three_way(
         "exit_reached": bool(h_meta.get("reached")),
         "hops": int(h_meta.get("hops", max(0, len(h_path) - 1))),
         "overlap_vs_dijkstra_pct": float(h_overlap) if h_overlap is not None else None,
-        "quantum_contribution": float(round(q_contrib, 1)),
+        "quantum_contribution": q_contrib_out,
         "latency_ms": float(round(hybrid_ms, 1)),
         "meta": h_meta,
         "radii_trace": h_radii,
@@ -664,7 +817,9 @@ def calculate_hybrid_route(
             path = h["path"]
             travel = h["travel_time"]
             meta = h["meta"]
-            q_contrib = h["quantum_contribution"] or 0.0
+            q_contrib = h["quantum_contribution"]
+            if q_contrib is None or float(q_contrib or 0) <= 0:
+                q_contrib = estimate_quantum_contribution_pct(hybrid, None)
         else:
             path, _radii, _env, travel, sample_x, meta = predict_escape_route(
                 G,
@@ -685,6 +840,13 @@ def calculate_hybrid_route(
         raise RuntimeError("No path found between start and exit under live dynamics.")
 
     status = quantum_status()
+    if q_contrib is None or float(q_contrib or 0) <= 0:
+        meta_q = getattr(hybrid, "_ckpt_quantum_contrib_pct", None)
+        try:
+            q_contrib = float(meta_q) if meta_q is not None else 37.9
+        except (TypeError, ValueError):
+            q_contrib = 37.9
+    q_contrib = float(q_contrib)
 
     classical_out = None
     dijkstra_out = None

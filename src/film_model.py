@@ -99,8 +99,13 @@ def train_film_model(
     weight_decay: float = 1e-5,
     device: Optional[str] = None,
     checkpoint: Path = MODEL_CHECKPOINT,
+    lambda_safe: float = 0.35,
+    feature_mean: Optional[np.ndarray] = None,
+    feature_std: Optional[np.ndarray] = None,
 ) -> Tuple[ClassicalFiLMNetwork, Dict[str, float]]:
-    """Train classical FiLM on Dijkstra labels; save checkpoint. Returns (model, metrics)."""
+    """Train classical FiLM on Dijkstra labels + optional safety aux loss."""
+    from .safety_loss import total_routing_loss
+
     ensure_dirs()
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = ClassicalFiLMNetwork().to(device)
@@ -121,16 +126,26 @@ def train_film_model(
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     best_val = float("inf")
     best_state = None
-    metrics: Dict[str, float] = {}
+    metrics: Dict[str, float] = {"lambda_safe": float(lambda_safe)}
 
-    print(f"[QuantumRelief] Training Classical FiLM on {device} ({epochs} epochs)…")
+    print(
+        f"[QuantumRelief] Training Classical FiLM on {device} "
+        f"({epochs} epochs, λ_safe={lambda_safe:.2f})…"
+    )
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss, correct, total = 0.0, 0, 0
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
             logits = model(xb)
-            loss = F.cross_entropy(logits, yb)
+            loss, _, _ = total_routing_loss(
+                logits,
+                yb,
+                xb,
+                lambda_safe=lambda_safe,
+                mean=feature_mean,
+                std=feature_std,
+            )
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -144,6 +159,7 @@ def train_film_model(
             for xb, yb in val_loader:
                 xb, yb = xb.to(device), yb.to(device)
                 logits = model(xb)
+                # Val metric stays pure CE so checkpoints track Dijkstra fidelity.
                 loss = F.cross_entropy(logits, yb)
                 vloss += loss.item() * len(yb)
                 vcorrect += (logits.argmax(1) == yb).sum().item()
@@ -165,6 +181,7 @@ def train_film_model(
                 "val_acc": float(val_acc),
                 "val_loss": float(vloss),
                 "best_epoch": float(epoch),
+                "lambda_safe": float(lambda_safe),
             }
 
     if best_state is not None:
@@ -172,6 +189,7 @@ def train_film_model(
     payload = {
         "model_state": model.state_dict(),
         "metrics": metrics,
+        "lambda_safe": float(lambda_safe),
         "arch": {
             "main_dim": MAIN_DIM,
             "film_dim": FILM_DIM,
