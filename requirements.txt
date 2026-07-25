@@ -17,7 +17,10 @@ torch==2.2.2
 autoray>=0.6.1,<0.7
 pennylane>=0.34,<0.40
 
-streamlit>=1.28,<1.45
+# 1.45.1+ keeps SessionInfo across websocket reconnects (Cloud "Bad message
+# format — Tried to use SessionInfo before it was initialized"). Cap <1.49 to
+# avoid surprise API drift on Community Cloud rebuilds.
+streamlit>=1.45.1,<1.49
 folium>=0.15,<0.20
-streamlit-folium>=0.15,<0.25
+streamlit-folium>=0.18,<0.25
 tqdm>=4.66,<5
