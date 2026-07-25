@@ -34,7 +34,12 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.dynamic_simulation import damage_radius, exit_radius
+from src.dynamic_simulation import (
+    damage_radius,
+    disruption_edge_latlons,
+    exit_radius,
+    sample_random_disruptions,
+)
 from src.film_model import ensure_trained_model
 from src.graph_setup import (
     load_or_build_graph,
@@ -66,6 +71,7 @@ DIJKSTRA_ROUTE_COLOR = "#E8EEF6"
 HAZARD_ROUTE_COLOR = "#FF4D6A"
 EXIT_RING_COLOR = "#F5C542"
 ORANGE_ACCENT = "#FF8A4C"
+DISRUPTION_COLOR = "#F5A623"  # amber — not purple
 
 MAP_H = 820  # concrete Folium px height (avoid % → black map)
 
@@ -547,11 +553,41 @@ def _refresh_exit_ranking(G, exits) -> List[dict]:
     """Auto-pick best exit silently; store one-line ranking meta."""
     start = st.session_state["start_node"]
     epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
-    best, ranking = recommend_best_exit(G, start, exits, epi)
+    disruptions = st.session_state.get("edge_disruptions")
+    best, ranking = recommend_best_exit(
+        G, start, exits, epi, edge_disruptions=disruptions
+    )
     st.session_state["exit_ranking"] = ranking
     st.session_state["recommended_exit"] = best
     st.session_state["dest_node"] = best
     return ranking
+
+
+def _active_disruption_count() -> int:
+    raw = st.session_state.get("edge_disruptions") or {}
+    edges = raw.get("edges") if isinstance(raw, dict) else None
+    return len(edges) if edges else 0
+
+
+def _set_random_disruption(G) -> int:
+    """Sample a small soft-congestion corridor; clear prior routes."""
+    import time as _time
+
+    seed = int(_time.time() * 1000) % (2**31 - 1)
+    dset = sample_random_disruptions(
+        G,
+        n_seed_edges=1,
+        corridor_extra=int(np.random.randint(2, 5)),
+        seed=seed,
+    )
+    st.session_state["edge_disruptions"] = dset.to_serializable()
+    _clear_route_results()
+    return len(dset.normalized_edges())
+
+
+def _clear_disruption() -> None:
+    st.session_state.pop("edge_disruptions", None)
+    _clear_route_results()
 
 
 def _set_location(G, exits, lat: float, lon: float) -> None:
@@ -591,6 +627,8 @@ def _init_session(G, exits, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = "Click the map to set your location."
+    if "edge_disruptions" not in st.session_state:
+        st.session_state["edge_disruptions"] = None
     if "exit_ranking" not in st.session_state:
         _refresh_exit_ranking(G, exits)
 
@@ -690,7 +728,8 @@ def main():
             "everyday traffic and closures. Local Hybrid inference. "
             f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan</b> Hybrid · "
             f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold</b> Classical · "
-            f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White</b> Dijkstra."
+            f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White</b> Dijkstra · "
+            f"<b style='color:{DISRUPTION_COLOR}'>Amber</b> disruption."
             "</p></div>",
             unsafe_allow_html=True,
         )
@@ -717,6 +756,57 @@ def main():
             _refresh_exit_ranking(G, exits)
             st.session_state["map_status"] = f"Epicenter → {lat_r:.5f}, {lon_r:.5f}"
             st.rerun()
+
+        st.markdown(
+            '<div class="qr-panel"><h3>Road disruption</h3></div>',
+            unsafe_allow_html=True,
+        )
+        n_disrupted = _active_disruption_count()
+        if n_disrupted > 0:
+            mult = float(
+                (st.session_state.get("edge_disruptions") or {}).get("multiplier", 5.0)
+            )
+            st.markdown(
+                f'<div class="qr-ro"><strong>Active</strong><br/>'
+                f"{n_disrupted} edges · ×{mult:.0f} soft weight · amber dashed</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="qr-ro"><strong>None</strong><br/>'
+                "Map edges at nominal + hazard weights only</div>",
+                unsafe_allow_html=True,
+            )
+        dcol_a, dcol_b = st.columns(2)
+        with dcol_a:
+            if st.button(
+                "Random road disruption",
+                use_container_width=True,
+                type="secondary",
+                key="btn_random_disruption",
+            ):
+                n = _set_random_disruption(G)
+                _refresh_exit_ranking(G, exits)
+                st.session_state["map_status"] = (
+                    f"Road disruption → {n} edges (soft congestion)"
+                )
+                st.rerun()
+        with dcol_b:
+            if st.button(
+                "Clear disruption",
+                use_container_width=True,
+                type="secondary",
+                key="btn_clear_disruption",
+                disabled=n_disrupted == 0,
+            ):
+                _clear_disruption()
+                _refresh_exit_ranking(G, exits)
+                st.session_state["map_status"] = "Road disruption cleared"
+                st.rerun()
+        st.caption(
+            "Simulated traffic / closures until TomTom or HERE — soft high weights, "
+            "not hard blocks."
+        )
 
         ranking = st.session_state.get("exit_ranking") or []
         if ranking:
@@ -795,6 +885,7 @@ def main():
                         (epi_lon, epi_lat),
                         include_classical=True,
                         include_dijkstra=True,
+                        edge_disruptions=st.session_state.get("edge_disruptions"),
                     )
 
                     h = cmp["hybrid"]
@@ -1217,6 +1308,21 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         center = list(st.session_state["map_center"])
         zoom = int(st.session_state.get("map_zoom", 16))
         m = build_base_map(G, exits, center, zoom)
+
+        # Soft road disruptions (amber dashed) — drawn under route overlays.
+        disruption_coords = disruption_edge_latlons(
+            G, st.session_state.get("edge_disruptions")
+        )
+        for coords_d in disruption_coords:
+            _no_click(
+                folium.PolyLine(
+                    coords_d,
+                    color=DISRUPTION_COLOR,
+                    weight=5,
+                    opacity=0.9,
+                    dash_array="6 8",
+                )
+            ).add_to(m)
 
         for row in ranking:
             color = HYBRID_ROUTE_COLOR if row.get("recommended") else ORANGE_ACCENT
