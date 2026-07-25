@@ -938,6 +938,13 @@ def main():
                     key="hazard_t_scrub",
                 )
                 st.session_state["_step_reveal"] = min(int(t_scrub) + 1, len(path) - 1)
+                r_now = float(damage_radius(float(t_scrub)))
+                if 0 <= int(t_scrub) < len(radii_for_scrub):
+                    r_now = float(radii_for_scrub[int(t_scrub)]["r_epi"])
+                st.caption(
+                    f"Epicenter radius grows with t · "
+                    f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km**"
+                )
             else:
                 st.session_state.pop("_step_reveal", None)
 
@@ -1057,11 +1064,19 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
         ranking = st.session_state.get("exit_ranking") or []
 
-        t_show = int(st.session_state.get("hazard_t_scrub", 0)) if radii_trace else 0
+        # Live scrubber t drives r_epi / rings (same damage_radius as Algorithm 1).
         step_reveal = st.session_state.get("_step_reveal")
-        if radii_trace and path and len(path) >= 2 and step_reveal is None:
-            t_show = max(0, len(radii_trace) - 1)
-            step_reveal = min(t_show + 1, len(path) - 1)
+        if radii_trace and path and len(path) >= 2:
+            max_t = max(0, len(radii_trace) - 1)
+            if "hazard_t_scrub" in st.session_state:
+                t_show = int(st.session_state["hazard_t_scrub"])
+            else:
+                t_show = max_t
+            t_show = max(0, min(t_show, max_t))
+            if step_reveal is None:
+                step_reveal = min(t_show + 1, len(path) - 1)
+        else:
+            t_show = 0
 
         m = build_base_map(
             G,
@@ -1083,8 +1098,9 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             )
             _no_click(marker).add_to(m)
 
-        r_epi = damage_radius(t_show)
-        r_exit = exit_radius(t_show)
+        # Paper Sec. II C / Algorithm 1: r_epi(t) = 0.5 + √(0.0002·t) km
+        r_epi = float(damage_radius(float(t_show)))
+        r_exit = float(exit_radius(float(t_show)))
         if radii_trace and 0 <= t_show < len(radii_trace):
             r_epi = float(radii_trace[t_show]["r_epi"])
             r_exit = float(radii_trace[t_show]["r_exit"])
@@ -1092,7 +1108,7 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         for frac, op in [(1.0, 0.10), (0.75, 0.16), (0.3, 0.28)]:
             ring = folium.Circle(
                 location=[epi[1], epi[0]],
-                radius=frac * r_epi * 1000.0,
+                radius=frac * r_epi * 1000.0,  # Folium Circle uses meters
                 color=HAZARD_ROUTE_COLOR,
                 weight=2 if frac == 1.0 else 1,
                 fill=True,
@@ -1184,9 +1200,11 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                     )
                 ).add_to(m)
 
+        # Key includes t so Folium remounts when hazard rings resize (static key
+        # leaves stale Circle radii after scrubbing).
         map_data = st_folium(
             m,
-            key="qr_map_escape",
+            key=f"qr_map_escape_t{t_show}",
             height=MAP_H,
             use_container_width=True,
             returned_objects=["last_clicked"],
