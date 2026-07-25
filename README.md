@@ -4,10 +4,10 @@
 
 Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 
-[![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://quantumrelief.streamlit.app)
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](runtime.txt)
-[![PennyLane](https://img.shields.io/badge/QML-PennyLane-19B244)](https://pennylane.ai)
-[![License](https://img.shields.io/badge/License-see%20LICENSE-blue)](LICENSE)
+[Streamlit](https://quantumrelief.streamlit.app)
+[Python](runtime.txt)
+[PennyLane](https://pennylane.ai)
+[License](LICENSE)
 
 Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
 
@@ -19,7 +19,7 @@ Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)*
 
 Cities do not wait for a disaster to break routing. **Traffic, closed streets, and congestion** rewrite edge costs every hour. Static shortest path assumes a frozen graph; QuantumRelief treats the map as **live dynamics**.
 
-**Earthquake Escape** (Manila Intramuros) is the **Quantathon flagship** — an extreme dynamic-hazard stress test for judges. The broader product is the same engine applied to everyday dynamics: **B2B API + simulation now**, **B2G2C Escape** as civic proof for later.
+**Earthquake Escape** (Manila Intramuros) is the **Quantathon extreme stress demo** inside **Live Escape** — optional hazard rings on top of everyday road disruptions. The broader product is the same engine applied to daily dynamics: **B2B API + simulation now**, **B2G2C Live Escape** as civic proof for later.
 
 A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline under Algorithm 1 dynamic weights.
 
@@ -29,9 +29,11 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 **One surface**
 
-| Surface | Audience | Role |
-| --- | --- | --- |
-| **Escape** | Citizens + gov demos (B2G2C flagship) | Your location → random epicenter → auto-best exit → Hybrid · Classical · Dijkstra |
+
+| Surface         | Audience                              | Role                                                                                                      |
+| --------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **Live Escape** | Citizens + gov demos (B2G2C flagship) | Your location → change the map (disruption and/or epi) → safest & fastest · Hybrid · Classical · Dijkstra |
+
 
 `src/god_view.py` remains in-repo for optional command-center experiments but is **not** wired into the Streamlit UI.
 
@@ -41,13 +43,15 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 ## Problem & solution
 
-| Beat | Story |
-| --- | --- |
-| **Problem** | Static Dijkstra / A* corridors fail when edge costs move — jams, closures, cascading congestion. |
-| **Extreme case** | Earthquake + exit surge = the hardest dynamic-hazard regime (Escape demo). |
-| **Everyday case** | Same weight-update idea for traffic / closed streets / fleet shocks. |
-| **Solution** | Dynamic edge weights + **Hybrid FiLM∥PHN** local next-hop vs Classical ablation vs Dijkstra oracle. |
-| **Business** | Sell **B2B routing API / sim** now; grow **B2G2C Escape** trust over time. |
+
+| Beat              | Story                                                                                               |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| **Problem**       | Static Dijkstra / A* corridors fail when edge costs move — jams, closures, cascading congestion.    |
+| **Extreme case**  | Earthquake + exit surge = the hardest dynamic-hazard regime (Escape demo).                          |
+| **Everyday case** | Same weight-update idea for traffic / closed streets / fleet shocks.                                |
+| **Solution**      | Dynamic edge weights + **Hybrid FiLM∥PHN** local next-hop vs Classical ablation vs Dijkstra oracle. |
+| **Business**      | Sell **B2B routing API / sim** now; grow **B2G2C Escape** trust over time.                          |
+
 
 ---
 
@@ -55,14 +59,16 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 From `data/retrain_report.json` — balance hard fine-tune (`λ_safe=0.32`, hard_frac=0.45, best **F16**) from `film_hybrid_pre_balance.pt`; fair eval **32** trials (hard_seeds + random).
 
-| Metric | Hybrid | Classical | Dijkstra |
-| --- | --- | --- | --- |
-| Val accuracy | ≈ **0.920** | ≈ **0.886** | — |
-| Mean travel time | ≈ **12.83** | ≈ **13.89** | ≈ **12.19** |
-| Mean safety score (min-epi) | ≈ **0.51** | ≈ **0.46** | ≈ **0.56** |
-| Exit reached | **100%** | **100%** | **100%** |
-| Path overlap vs Dijkstra | ≈ **55.6%** | ≈ **51.0%** | — |
-| Quantum contribution | ≈ **77.6%** | — | — |
+
+| Metric                      | Hybrid      | Classical   | Dijkstra    |
+| --------------------------- | ----------- | ----------- | ----------- |
+| Val accuracy                | ≈ **0.920** | ≈ **0.886** | —           |
+| Mean travel time            | ≈ **12.83** | ≈ **13.89** | ≈ **12.19** |
+| Mean safety score (min-epi) | ≈ **0.51**  | ≈ **0.46**  | ≈ **0.56**  |
+| Exit reached                | **100%**    | **100%**    | **100%**    |
+| Path overlap vs Dijkstra    | ≈ **55.6%** | ≈ **51.0%** | —           |
+| Quantum contribution        | ≈ **77.6%** | —           | —           |
+
 
 Hybrid **mean travel ≤ Classical** (Δ ≈ −1.06) with **~75%** travel wins and **~81%** near Dijkstra. Mean **min-epi** safety also edges Classical (Δ ≈ +0.045). Catastrophic blowups (H travel > 1.25× C) ≈ **9.4%** (down from ~10.7%). **Promote: YES** — `film_hybrid_hardft.pt` → serving `models/film_hybrid.pt`. UI **HERO** badge only when Hybrid strictly beats Classical on travel, or travel-tie + higher safety.
 
@@ -94,7 +100,7 @@ Implemented in `src/quantum_hybrid.py` → `estimate_quantum_contribution_pct`.
 
 ### Latency note
 
-On **Find route**, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex operators; Classical FiLM remains the production fallback.
+On **Find safest & fastest route**, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex operators; Classical FiLM remains the production fallback.
 
 ### Quantum Advantage stress scenarios
 
@@ -111,13 +117,13 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 - **Hybrid QML hero** — PennyLane PHN FiLM; **cyan** path on the map
 - **Classical FiLM ablation** — **gold** overlay (same FiLM, no quantum branch)
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
-- **3-way metrics** — travel time, exit reached, path overlap, quantum contribution, latency (ms)
+- **3-way metrics** — travel time, safety, exit reached, path overlap, quantum contribution, latency (ms)
 - **Auto-best exit** — silent ranking; one recommended-exit line in the panel
-- **Location** — Folium map click, snapped to nearest graph node
-- **Epicenter** — **Random epicenter** only (flagship disaster stress)
-- **Road disruption** — **Random road disruption** soft-penalizes a small corridor (amber dashed); stand-in for traffic / closures until TomTom / HERE
-- **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
-- **Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel (Quantathon flagship)
+- **Location** — Folium map click, snapped to nearest graph node (no address field)
+- **Road disruptions (first-class)** — Congestion (×5) / Closed corridor soft (×8); amber dashed overlay + edge count
+- **Epicenter** — optional extreme hazard (**Random epicenter**); expanding red rings
+- **Dynamic hazards** — expanding r_{epi} / r_{exit} rings scrubbed by simulation time `t`
+- **Live Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel (Quantathon flagship)
 - **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 
@@ -127,7 +133,7 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 
 ```mermaid
 flowchart LR
-  UX[Streamlit Escape flagship] --> RS[routing_service]
+  UX[Streamlit Live Escape] --> RS[routing_service]
   API[FastAPI B2B API] --> RS
   RS --> H[Hybrid QML FiLM]
   RS --> C[Classical FiLM]
@@ -136,6 +142,8 @@ flowchart LR
   RS --> G[Intramuros GraphML]
   RS --> Dyn[Algorithm 1 dynamic weights]
 ```
+
+
 
 ---
 
@@ -171,19 +179,22 @@ Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM do
 
 ---
 
-## How to use — Escape (flagship demo)
+## How to use — Live Escape (flagship demo)
 
-1. **Click the map** to set your location — snapped to the nearest road node
-2. Press **Random epicenter**
-3. (Optional) Press **Random road disruption** — amber dashed corridor = soft congestion / soft-block
-4. Read the **Best exit** line (auto-recommended)
-5. Press **Find route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
-6. Scrub hazard time **`t`** — red \(r_{epi}\) / gold \(r_{exit}\) expand (live edge costs)
-7. Read right-panel **3-way metrics**: travel times, quantum contribution, latency
+**Framing:** the map is always dynamic. Earthquake is the optional extreme stress case — not the only story.
+
+1. **Click the map** to set your location (apartment / trip start) — snapped to the nearest road node
+2. **Change the map** (encourage at least one):
+   - **Congestion** or **Closed corridor (soft)** — amber dashed soft costs; edge count shown
+   - and/or **Random epicenter** — extreme hazard rings
+3. Read the **Best exit** line (auto-recommended)
+4. Press **Find safest & fastest route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
+5. Scrub hazard time `**t`** when an epicenter is active — red r_{epi} / gold r_{exit} expand
+6. Read right-panel **3-way metrics**: travel, safety, quantum contribution, latency — **HERO** only when Hybrid wins
 
 Layout: left **~2/3** Folium map (fixed) · right **~1/3** scrollable controls + metrics.
 
-Escape shows the **extreme** end of the dynamic-map problem; **Random road disruption** proves the same engine under everyday-style edge shocks without live traffic APIs. Real TomTom / HERE feeds are roadmap.
+On first load, a curated Hybrid-advantage scenario auto-runs when present (disruption nudge only). If none, a soft congestion corridor is seeded so amber corridors are visible without hunting.
 
 ---
 
@@ -194,7 +205,7 @@ QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
   requirements-api.txt     # FastAPI + uvicorn
-  app.py                   # Escape-only flagship (Folium 2D)
+  app.py                   # Live Escape flagship (Folium 2D; Escape-only)
   api.py                   # B2B Quantum Routing API
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
                            # + demo_scenarios.json + hard_seeds.json
@@ -218,15 +229,17 @@ QuantumRelief/
 
 ## Models & data
 
-| Asset | Role |
-| --- | --- |
-| `models/film_hybrid.pt` | Hybrid QML FiLM (PennyLane PHN) — demo hero |
-| `models/film_classical.pt` | Classical FiLM ablation |
-| `data/manila_intramuros_graph.graphml` | Cached Intramuros road graph |
-| `data/routing_dataset.npz` | Training / eval samples (~18.9k hard) |
-| `data/retrain_report.json` | Val acc + 3-way route smoke metrics |
-| `data/demo_scenarios.json` | Curated Quantum Advantage stress scenarios |
-| `data/hard_seeds.json` | Classical-failure seeds for hard oversample |
+
+| Asset                                  | Role                                        |
+| -------------------------------------- | ------------------------------------------- |
+| `models/film_hybrid.pt`                | Hybrid QML FiLM (PennyLane PHN) — demo hero |
+| `models/film_classical.pt`             | Classical FiLM ablation                     |
+| `data/manila_intramuros_graph.graphml` | Cached Intramuros road graph                |
+| `data/routing_dataset.npz`             | Training / eval samples (~18.9k hard)       |
+| `data/retrain_report.json`             | Val acc + 3-way route smoke metrics         |
+| `data/demo_scenarios.json`             | Curated Quantum Advantage stress scenarios  |
+| `data/hard_seeds.json`                 | Classical-failure seeds for hard oversample |
+
 
 **Hard retrain** (recommended; CPU-bound Hybrid; periodic checkpoints mid-run):
 
@@ -259,11 +272,13 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 
 ## Business & roadmap
 
-| Horizon | Focus |
-| --- | --- |
-| **Now** | Escape flagship + Hybrid / Classical / Dijkstra ablation · B2B `/api/v1/calculate_route` · simulated dynamics on Manila OSM |
-| **Next** | Plug-in live traffic / closure weights (TomTom / HERE) · multi-district graphs · fleet pilots |
-| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Escape product |
+
+| Horizon   | Focus                                                                                                                            |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Now**   | Live Escape + Hybrid / Classical / Dijkstra · B2B `/api/v1/calculate_route` · simulated dynamics (disruption + optional quake) |
+| **Next**  | Plug-in live traffic / closure weights (TomTom / HERE) · multi-district graphs · fleet pilots                                    |
+| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Live Escape product                                           |
+
 
 ---
 
@@ -273,7 +288,7 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 2. [share.streamlit.io](https://share.streamlit.io) → select repo → **reboot the app** after model / dataset uploads so `@st.cache_resource` reloads checkpoints
 3. Confirm logs: Python **3.11** (`runtime.txt`), `numpy` before `torch`, PennyLane import OK
 
-Cloud pins live in **`requirements.txt`**. API deps stay in **`requirements-api.txt`** so Cloud stays lean.
+Cloud pins live in `**requirements.txt`**. API deps stay in `**requirements-api.txt**` so Cloud stays lean.
 
 Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane install times out, Classical FiLM still runs; Hybrid shows unavailable.
 
@@ -282,7 +297,7 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 ## Team
 
 **Quantrio** (Team 5) · QC4SG — SEA Quantathon 2026  
-Dynamic-edge routing with Hybrid QML — Escape flagship on Manila Intramuros.
+Dynamic-edge routing with Hybrid QML — Live Escape on Manila Intramuros.
 
 ---
 

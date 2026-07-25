@@ -1,10 +1,13 @@
 """
-QuantumRelief — Escape-only Streamlit flagship (Quantathon demo).
+QuantumRelief — Live Escape Streamlit prototype (Quantathon demo).
 
-Product thesis: the map is always dynamic (traffic, closures, congestion).
-Earthquake Escape is the extreme stress case of that same engine — not the
-only job. UX: set location → random epicenter → auto-best exit → Hybrid QML
-vs Classical vs Dijkstra. Folium 2D only. No God View / address input.
+Product thesis: Hybrid QML optimal routing when the map is always dynamic
+(traffic, closures, broken streets). Earthquake is the extreme stress demo,
+not the only story.
+
+UX flow: set location → change the map (road disruption and/or epicenter) →
+find safest & fastest route → Hybrid vs Classical vs Dijkstra.
+Folium 2D only. No God View / address input.
 Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 """
 
@@ -19,7 +22,7 @@ import streamlit as st
 
 # Must be the first Streamlit command (before folium / heavy src imports).
 st.set_page_config(
-    page_title="QuantumRelief",
+    page_title="QuantumRelief · Live Escape",
     page_icon="🌀",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -217,6 +220,30 @@ st.markdown(
       font-size: 0.85rem; color: var(--qr-mist);
     }
     .qr-rec strong { color: #fff; }
+    .qr-step {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 1.25rem; height: 1.25rem; border-radius: 50%;
+      font-size: 0.68rem; font-weight: 700; margin-right: 0.4rem;
+      color: #041018; background: var(--qr-cyan);
+      vertical-align: middle;
+    }
+    .qr-nudge {
+      background: rgba(245,166,35,0.10);
+      border: 1px solid rgba(245,166,35,0.35);
+      border-radius: 10px;
+      padding: 0.45rem 0.65rem;
+      margin: 0.25rem 0 0.45rem 0;
+      font-size: 0.78rem; color: #ffd59a;
+    }
+    .qr-legend {
+      display: flex; flex-wrap: wrap; gap: 0.45rem 0.75rem;
+      margin: 0.35rem 0 0.15rem 0;
+      font-size: 0.72rem; color: var(--qr-mist);
+    }
+    .qr-legend i {
+      display: inline-block; width: 0.7rem; height: 0.7rem;
+      border-radius: 2px; margin-right: 0.28rem; vertical-align: -1px;
+    }
     .qr-footer {
       margin-top: 0.75rem; padding-top: 0.65rem;
       border-top: 1px solid rgba(154,168,188,0.12);
@@ -445,7 +472,7 @@ def _apply_advantage_scenario(G, exits, scenario: Dict[str, Any]) -> str:
     title = scenario.get("title") or scenario.get("id") or "advantage"
     msg = (
         f"Advantage demo · {title}.{expected} "
-        "Find route runs automatically on first load."
+        "Safest & fastest route runs automatically on first load."
     )
     st.session_state["map_status"] = msg
     st.session_state["advantage_scenario_id"] = scenario.get("id")
@@ -569,18 +596,38 @@ def _active_disruption_count() -> int:
     return len(edges) if edges else 0
 
 
-def _set_random_disruption(G) -> int:
-    """Sample a small soft-congestion corridor; clear prior routes."""
+def _disruption_summary() -> str:
+    """Human label for the active soft disruption (or None)."""
+    raw = st.session_state.get("edge_disruptions")
+    if not isinstance(raw, dict) or not raw.get("edges"):
+        return "None — map edges at nominal + hazard weights only"
+    n = len(raw["edges"])
+    mult = float(raw.get("multiplier", 5.0))
+    kind = str(raw.get("kind", "congestion"))
+    if kind == "soft_block":
+        label = "Closed corridor (soft)"
+    else:
+        label = "Congestion"
+    return f"{label} · {n} disrupted edges · ×{mult:.0f} soft weight · amber dashed"
+
+
+def _set_random_disruption(G, *, soft_block: bool = False) -> int:
+    """Sample a soft congestion or soft-closed corridor; clear prior routes."""
     import time as _time
 
     seed = int(_time.time() * 1000) % (2**31 - 1)
+    corridor = (
+        int(np.random.randint(3, 6)) if soft_block else int(np.random.randint(2, 5))
+    )
     dset = sample_random_disruptions(
         G,
         n_seed_edges=1,
-        corridor_extra=int(np.random.randint(2, 5)),
+        corridor_extra=corridor,
+        soft_block=soft_block,
         seed=seed,
     )
     st.session_state["edge_disruptions"] = dset.to_serializable()
+    st.session_state.pop("_nudge_disruption", None)
     _clear_route_results()
     return len(dset.normalized_edges())
 
@@ -626,7 +673,9 @@ def _init_session(G, exits, nodes, origin):
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
-        st.session_state["map_status"] = "Click the map to set your location."
+        st.session_state["map_status"] = (
+            "Click the map to set your location, then change the live map."
+        )
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
     if "exit_ranking" not in st.session_state:
@@ -658,12 +707,13 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Escape flagship · Manila Intramuros · dynamic map</div>',
+        '<div class="qr-tagline">Live Escape · your trip under a changing map</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">The map is always dynamic. Escape is the extreme case — '
-        "we pick the best exit and route you out with Hybrid QML vs Classical and Dijkstra.</div>",
+        '<div class="qr-tag">Traffic, closures, and congestion rewrite edge costs every hour. '
+        "Earthquake is the optional extreme stress demo — Hybrid QML finds the safest &amp; "
+        "fastest route vs Classical and Dijkstra.</div>",
         unsafe_allow_html=True,
     )
 
@@ -681,15 +731,24 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, exits, nodes, origin)
 
-    # First paint: load advantage scenario, but defer Hybrid inference to the
-    # next run so the map can mount before the long PennyLane spin (avoids
-    # Cloud websocket drop → SessionInfo error on cold start).
+    # First paint: prefer advantage scenario (preserves curated Hybrid win).
+    # If none, seed a soft congestion corridor so judges see amber without hunting.
+    # Defer Hybrid inference one run so the map mounts before PennyLane spin.
     if not st.session_state.get("_advantage_autoload_done"):
         st.session_state["_advantage_autoload_done"] = True
         sc0 = _pick_advantage_scenario()
         if sc0 is not None:
             _apply_advantage_scenario(G, exits, sc0)
             st.session_state["_schedule_auto_run"] = True
+            # Nudge only — do not auto-apply disruption over advantage coords.
+            st.session_state["_nudge_disruption"] = True
+        else:
+            n = _set_random_disruption(G, soft_block=False)
+            _refresh_exit_ranking(G, exits)
+            st.session_state["map_status"] = (
+                f"Live map seeded with congestion ({n} amber edges). "
+                "Click to set location, optionally add an epicenter, then find a route."
+            )
     elif st.session_state.pop("_schedule_auto_run", False):
         st.session_state["_auto_run_route"] = True
 
@@ -722,91 +781,130 @@ def main():
             else '<span class="qr-badge warn">PennyLane unavailable · Classical only</span>'
         )
         st.markdown(
-            f'<div class="qr-panel"><h3>Escape</h3>{badge}'
-            "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0 0'>"
-            "Flagship stress test: expanding hazard rewrites edge costs — same idea as "
-            "everyday traffic and closures. Local Hybrid inference. "
-            f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan</b> Hybrid · "
-            f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold</b> Classical · "
-            f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White</b> Dijkstra · "
-            f"<b style='color:{DISRUPTION_COLOR}'>Amber</b> disruption."
-            "</p></div>",
+            f'<div class="qr-panel"><h3>Live Escape</h3>{badge}'
+            "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
+            "Set where you are, change the live map, then find the safest &amp; fastest route. "
+            "Earthquake hazard is optional stress — everyday congestion is first-class."
+            "</p>"
+            '<div class="qr-legend">'
+            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid</span>'
+            f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Classical</span>'
+            f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>Dijkstra</span>'
+            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Road disruption</span>'
+            f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Hazard (optional)</span>'
+            "</div></div>",
             unsafe_allow_html=True,
         )
 
-        st.markdown('<div class="qr-panel"><h3>Your location</h3></div>', unsafe_allow_html=True)
+        # ---- 1. Location ----
+        st.markdown(
+            '<div class="qr-panel"><h3>'
+            '<span class="qr-step">1</span>Your location</h3></div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(
             f'<div class="qr-ro"><strong>Snapped</strong><br/>'
             f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
             f' · node {st.session_state["start_node"]}</div>',
             unsafe_allow_html=True,
         )
-        st.caption("Click the map to set your location.")
+        st.caption("Click the map to set your apartment or trip start.")
 
-        st.markdown('<div class="qr-panel"><h3>Epicenter</h3></div>', unsafe_allow_html=True)
+        # ---- 2. Change the map ----
         st.markdown(
-            f'<div class="qr-ro"><strong>Quake</strong><br/>'
-            f'{st.session_state["epi_lat"]:.5f}, {st.session_state["epi_lon"]:.5f}</div>',
+            '<div class="qr-panel"><h3>'
+            '<span class="qr-step">2</span>Change the map</h3></div>',
             unsafe_allow_html=True,
         )
-        if st.button("Random epicenter", use_container_width=True, type="secondary"):
-            (lon_r, lat_r), _ = random_epicenter(G)
-            _set_epicenter(lat_r, lon_r)
-            _clear_route_results()
-            _refresh_exit_ranking(G, exits)
-            st.session_state["map_status"] = f"Epicenter → {lat_r:.5f}, {lon_r:.5f}"
-            st.rerun()
-
-        st.markdown(
-            '<div class="qr-panel"><h3>Road disruption</h3></div>',
-            unsafe_allow_html=True,
+        st.caption(
+            "Apply at least one change so the graph is live — road disruption "
+            "and/or extreme hazard epicenter."
         )
+
         n_disrupted = _active_disruption_count()
-        if n_disrupted > 0:
-            mult = float(
-                (st.session_state.get("edge_disruptions") or {}).get("multiplier", 5.0)
-            )
+        st.markdown(
+            f'<div class="qr-ro"><strong>Road disruptions</strong><br/>'
+            f"{_disruption_summary()}</div>",
+            unsafe_allow_html=True,
+        )
+        if (
+            st.session_state.get("_nudge_disruption")
+            and n_disrupted == 0
+            and not st.session_state.get("path")
+        ):
             st.markdown(
-                f'<div class="qr-ro"><strong>Active</strong><br/>'
-                f"{n_disrupted} edges · ×{mult:.0f} soft weight · amber dashed</div>",
+                '<div class="qr-nudge">Tip for judges: add <b>Congestion</b> or '
+                "<b>Closed corridor</b> to see amber soft costs on the live map "
+                "(optional — advantage scenario already loaded).</div>",
                 unsafe_allow_html=True,
             )
-        else:
-            st.markdown(
-                '<div class="qr-ro"><strong>None</strong><br/>'
-                "Map edges at nominal + hazard weights only</div>",
-                unsafe_allow_html=True,
-            )
+
         dcol_a, dcol_b = st.columns(2)
         with dcol_a:
             if st.button(
-                "Random road disruption",
+                "Congestion",
                 use_container_width=True,
                 type="secondary",
-                key="btn_random_disruption",
+                key="btn_congestion",
+                help="Soft ×5 weight on a short corridor (amber dashed)",
             ):
-                n = _set_random_disruption(G)
+                n = _set_random_disruption(G, soft_block=False)
                 _refresh_exit_ranking(G, exits)
                 st.session_state["map_status"] = (
-                    f"Road disruption → {n} edges (soft congestion)"
+                    f"Congestion → {n} edges · amber soft weight ×5"
                 )
                 st.rerun()
         with dcol_b:
             if st.button(
-                "Clear disruption",
+                "Closed corridor",
                 use_container_width=True,
                 type="secondary",
-                key="btn_clear_disruption",
-                disabled=n_disrupted == 0,
+                key="btn_soft_block",
+                help="Soft ×8 closed corridor (still passable — not a hard delete)",
             ):
-                _clear_disruption()
+                n = _set_random_disruption(G, soft_block=True)
                 _refresh_exit_ranking(G, exits)
-                st.session_state["map_status"] = "Road disruption cleared"
+                st.session_state["map_status"] = (
+                    f"Closed corridor (soft) → {n} edges · amber soft weight ×8"
+                )
                 st.rerun()
+        if st.button(
+            "Clear disruptions",
+            use_container_width=True,
+            type="secondary",
+            key="btn_clear_disruption",
+            disabled=n_disrupted == 0,
+        ):
+            _clear_disruption()
+            _refresh_exit_ranking(G, exits)
+            st.session_state["map_status"] = "Road disruptions cleared"
+            st.rerun()
         st.caption(
-            "Simulated traffic / closures until TomTom or HERE — soft high weights, "
-            "not hard blocks."
+            f"Amber dashed = soft costs ({n_disrupted} active). "
+            "Simulated traffic / closures until TomTom or HERE — not hard blocks."
         )
+
+        st.markdown(
+            f'<div class="qr-ro"><strong>Extreme hazard · optional</strong><br/>'
+            f'Epicenter {st.session_state["epi_lat"]:.5f}, '
+            f'{st.session_state["epi_lon"]:.5f}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Random epicenter",
+            use_container_width=True,
+            type="secondary",
+            help="Earthquake stress demo — expanding red rings rewrite edge costs",
+        ):
+            (lon_r, lat_r), _ = random_epicenter(G)
+            _set_epicenter(lat_r, lon_r)
+            _clear_route_results()
+            _refresh_exit_ranking(G, exits)
+            st.session_state["map_status"] = (
+                f"Epicenter (extreme hazard) → {lat_r:.5f}, {lon_r:.5f}"
+            )
+            st.rerun()
+        st.caption("Earthquake is the Quantathon stress case of the same live-map engine.")
 
         ranking = st.session_state.get("exit_ranking") or []
         if ranking:
@@ -823,12 +921,22 @@ def main():
                 unsafe_allow_html=True,
             )
         else:
-            st.caption("Best exit will appear after location + epicenter are set.")
+            st.caption("Best exit appears after location is set.")
 
         if not pl_ok:
             st.caption(qstat["note"])
 
-        run = st.button("Find route", type="primary", use_container_width=True)
+        # ---- 3. Find route ----
+        st.markdown(
+            '<div class="qr-panel"><h3>'
+            '<span class="qr-step">3</span>Route</h3></div>',
+            unsafe_allow_html=True,
+        )
+        run = st.button(
+            "Find safest & fastest route",
+            type="primary",
+            use_container_width=True,
+        )
         if st.session_state.pop("_auto_run_route", False):
             run = True
         st.caption(
@@ -1029,7 +1137,10 @@ def main():
                         }
                     )
                     try:
-                        st.toast("Route ready — compare Hybrid / Classical / Dijkstra.", icon="✅")
+                        st.toast(
+                            "Route ready — Hybrid vs Classical vs Dijkstra.",
+                            icon="✅",
+                        )
                     except Exception:
                         pass
             except Exception as e:
@@ -1126,7 +1237,7 @@ def main():
                 if 0 <= int(t_scrub) < len(radii_for_scrub):
                     r_now = float(radii_for_scrub[int(t_scrub)]["r_epi"])
                 st.caption(
-                    f"Dynamic edge costs · epicenter radius grows with t · "
+                    f"Live edge costs · optional epicenter radius grows with t · "
                     f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km**"
                 )
             else:
@@ -1264,14 +1375,14 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
         else:
             st.info(
-                "Set location · random epicenter · **Find route** — "
-                "dynamic edge costs, Escape as extreme case."
+                "① Click map for your location · ② Congestion / Closed corridor "
+                "and/or Random epicenter · ③ **Find safest & fastest route**."
             )
 
         st.markdown(
             '<div class="qr-footer">'
             "Team 5 — Quantrio · QC4SG SEA Quantathon 2026<br/>"
-            "Escape flagship · dynamic map · Quantum Intelligence. Human Relief."
+            "Live Escape · dynamic map first · Quantum Intelligence. Human Relief."
             "</div>",
             unsafe_allow_html=True,
         )
