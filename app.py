@@ -512,6 +512,10 @@ def _clear_route_results():
         "qml_travel",
         "classical_travel",
         "dij_travel",
+        "qml_safety",
+        "classical_safety",
+        "dij_safety",
+        "qml_mean_epi_km",
         "sample_x",
         "q_contrib",
         "accuracy",
@@ -853,6 +857,34 @@ def main():
                             "qml_travel": qml_travel,
                             "classical_travel": classical_travel,
                             "dij_travel": dij_travel,
+                            "qml_safety": float(
+                                (h.get("safety") or {}).get(
+                                    "safety_score", float("nan")
+                                )
+                            ),
+                            "classical_safety": (
+                                float(
+                                    (cmp["classical"].get("safety") or {}).get(
+                                        "safety_score", float("nan")
+                                    )
+                                )
+                                if cmp.get("classical")
+                                else None
+                            ),
+                            "dij_safety": (
+                                float(
+                                    (cmp["dijkstra"].get("safety") or {}).get(
+                                        "safety_score", float("nan")
+                                    )
+                                )
+                                if cmp.get("dijkstra")
+                                else None
+                            ),
+                            "qml_mean_epi_km": float(
+                                (h.get("safety") or {}).get(
+                                    "mean_epi_km", float("nan")
+                                )
+                            ),
                             "sample_x": sample_x,
                             "q_contrib": q_contrib,
                             "accuracy": accuracy,
@@ -895,6 +927,9 @@ def main():
             qml_travel = float(st.session_state.get("qml_travel", 0.0))
             classical_travel = st.session_state.get("classical_travel")
             dij_travel = st.session_state.get("dij_travel")
+            qml_safety = st.session_state.get("qml_safety")
+            classical_safety = st.session_state.get("classical_safety")
+            dij_safety = st.session_state.get("dij_safety")
             accuracy = float(st.session_state.get("accuracy", 0.0))
             classical_accuracy = float(st.session_state.get("classical_accuracy", 0.0))
             _q_raw = st.session_state.get("q_contrib")
@@ -912,6 +947,8 @@ def main():
             # Strict travel win only; within 2% counts as a tie (not a "beat").
             beats_classical = False
             ties_classical = False
+            safer_than_classical = False
+            safety_win = False
             if (
                 classical_path is not None
                 and classical_travel is not None
@@ -923,6 +960,16 @@ def main():
                     ties_classical = bool(
                         not beats_classical and qml_travel <= ct * 1.02
                     )
+                if (
+                    qml_safety is not None
+                    and classical_safety is not None
+                    and np.isfinite(float(qml_safety))
+                    and np.isfinite(float(classical_safety))
+                ):
+                    safer_than_classical = bool(
+                        float(qml_safety) > float(classical_safety) + 1e-6
+                    )
+                    safety_win = bool(safer_than_classical and ties_classical)
             near_dij = (
                 dij_travel is not None
                 and dij_path
@@ -933,6 +980,10 @@ def main():
                 beats_classical = bool(narrative["hybrid_beats_classical"])
             if narrative.get("hybrid_ties_classical") is not None:
                 ties_classical = bool(narrative["hybrid_ties_classical"])
+            if narrative.get("hybrid_safer_than_classical") is not None:
+                safer_than_classical = bool(narrative["hybrid_safer_than_classical"])
+            if narrative.get("hybrid_safety_win") is not None:
+                safety_win = bool(narrative["hybrid_safety_win"])
             if narrative.get("hybrid_near_dijkstra") is not None:
                 near_dij = bool(narrative["hybrid_near_dijkstra"])
 
@@ -991,6 +1042,27 @@ def main():
                 unsafe_allow_html=True,
             )
 
+            def _fmt_safe(v) -> str:
+                try:
+                    fv = float(v)
+                    return f"{fv:.2f}" if np.isfinite(fv) else "—"
+                except (TypeError, ValueError):
+                    return "—"
+
+            s_win = " win" if safer_than_classical else ""
+            st.markdown(
+                f'<div class="qr-card hybrid{s_win}">'
+                f'<div class="label">Safety · Hybrid / Classical / Dijkstra</div>'
+                f'<div class="value" style="font-size:1.2rem">'
+                f'<span class="accent">{_fmt_safe(qml_safety)}</span>'
+                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
+                f'<span class="gold">{_fmt_safe(classical_safety)}</span>'
+                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
+                f'<span class="dij">{_fmt_safe(dij_safety)}</span></div>'
+                f'<div class="sub">Higher = farther from epi − hazard cost</div></div>',
+                unsafe_allow_html=True,
+            )
+
             q_val = (
                 f"{q_contrib:.1f}%"
                 if is_hybrid and q_contrib is not None and q_contrib > 0
@@ -1007,10 +1079,14 @@ def main():
 
             if beats_classical and near_dij:
                 story = "Hybrid beats Classical · near Dijkstra"
-            elif ties_classical and near_dij:
-                story = "Hybrid ties Classical · near Dijkstra"
             elif beats_classical:
                 story = "Hybrid beats Classical"
+            elif safety_win and near_dij:
+                story = "Travel tie · Hybrid safer · near Dijkstra"
+            elif safety_win:
+                story = "Travel tie · Hybrid safer"
+            elif ties_classical and near_dij:
+                story = "Hybrid ties Classical · near Dijkstra"
             elif ties_classical:
                 story = "Hybrid ties Classical"
             elif near_dij:
@@ -1018,7 +1094,7 @@ def main():
             else:
                 story = f"{model_used} · local inference"
             st.markdown(
-                f'<div class="qr-card{" win" if beats_classical or near_dij else ""}">'
+                f'<div class="qr-card{" win" if beats_classical or safety_win or near_dij else ""}">'
                 f'<div class="label">Verdict</div>'
                 f'<div class="value" style="font-size:1.05rem">{story}</div></div>',
                 unsafe_allow_html=True,
