@@ -321,13 +321,7 @@ st.markdown(
       padding-left: 1rem;
       padding-right: 1rem;
     }
-    /* B2C: hide empty collapsed sidebar chrome so map gets full width */
-    html.qr-b2c [data-testid="stSidebar"] {
-      display: none !important;
-    }
-    html.qr-b2c [data-testid="stSidebarCollapsedControl"] {
-      display: none !important;
-    }
+    /* B2C sidebar hide is injected in the B2C branch only (keeps God View intact). */
     .qr-panel {
       background: linear-gradient(165deg, rgba(14,22,40,0.94), rgba(10,15,30,0.9));
       border: 1px solid rgba(154,168,188,0.16);
@@ -369,6 +363,7 @@ st.markdown(
       overflow: hidden;
       border: 1px solid rgba(154,168,188,0.14);
       box-shadow: 0 12px 36px rgba(0,0,0,0.35);
+      height: 100%;
     }
     /* Top-level surface switcher */
     div[data-testid="stRadio"] > div {
@@ -731,7 +726,7 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-map-hint" style="margin-top:0.15rem">'
+        '<div class="qr-map-hint qr-top-legend" style="margin-top:0.15rem">'
         "<b>Safest + fastest escape:</b> Hybrid QML recommends the best evacuate area, "
         "then compares routes under a live quake sweep. "
         f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan = Hybrid QML</b> · "
@@ -807,54 +802,97 @@ def main():
         return
 
     # ---------- B2C Emergency Escape: 2/3 map · 1/3 controls ----------
-    # Hide collapsed sidebar chrome (controls live in the right panel).
+    # Layout CSS is B2C-branch-only (God View returns above → normal scroll + sidebar).
     st.markdown(
         """
         <style>
-        [data-testid="stSidebar"] { display: none !important; }
-        [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        /* B2C: fixed map column · independently scrolling controls panel */
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarCollapsedControl"] {
+          display: none !important;
+        }
+        .qr-brand { font-size: 1.55rem !important; }
+        .qr-tagline { font-size: 0.95rem !important; margin: 0.05rem 0 !important; }
+        .qr-tag,
+        .qr-team,
+        .qr-top-legend {
+          display: none !important;
+        }
+        html, body {
+          overflow: hidden !important;
+          height: 100% !important;
+        }
+        .stApp {
+          overflow: hidden !important;
+          height: 100vh !important;
+          max-height: 100vh !important;
+        }
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] > .main,
+        section.main {
+          overflow: hidden !important;
+          height: 100vh !important;
+          max-height: 100vh !important;
+        }
+        section.main .block-container {
+          padding-top: 0.35rem !important;
+          padding-bottom: 0.25rem !important;
+          padding-left: 0.75rem !important;
+          padding-right: 0.75rem !important;
+          max-width: 100% !important;
+          max-height: 100vh !important;
+          overflow: hidden !important;
+        }
+        /* Map | panel row under compact header + surface radio */
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"]),
+        div[data-testid="stHorizontalBlock"]:has(.qr-map-wrap),
+        div[data-testid="stHorizontalBlock"]:has(iframe) {
+          height: calc(100vh - 7.25rem) !important;
+          max-height: calc(100vh - 7.25rem) !important;
+          align-items: stretch !important;
+          overflow: hidden !important;
+          gap: 0.65rem !important;
+        }
+        /* Left 2/3 — map only, no vertical scroll */
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) {
+          overflow: hidden !important;
+          max-height: 100% !important;
+          height: 100% !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) > div {
+          overflow: hidden !important;
+          height: 100% !important;
+          max-height: 100% !important;
+        }
+        /* Right 1/3 — controls + metrics scroll independently */
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(2) {
+          overflow-y: auto !important;
+          overflow-x: hidden !important;
+          max-height: 100% !important;
+          height: 100% !important;
+          padding-right: 0.25rem;
+        }
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(2) > div {
+          max-height: none !important;
+        }
+        .qr-map-wrap,
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) iframe {
+          height: calc(100vh - 7.25rem) !important;
+          min-height: calc(100vh - 7.25rem) !important;
+          max-height: calc(100vh - 7.25rem) !important;
+          border: none !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1)
+          [data-testid="stVerticalBlockBorderWrapper"],
+        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1)
+          [data-testid="element-container"] {
+          height: 100% !important;
+          max-height: 100% !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
-    flow = int(st.session_state.get("flow_step", 1))
-    steps_html = "".join(
-        f'<div class="qr-step'
-        f'{" active" if flow == i else ""}'
-        f'{" done" if flow > i else ""}'
-        f'"><b>{i}</b>{label}</div>'
-        for i, label in [
-            (1, "Apartment + quake"),
-            (2, "Rank evacuate areas"),
-            (3, "Calculate escape"),
-            (4, "Compare routes"),
-        ]
-    )
-    st.markdown(f'<div class="qr-steps">{steps_html}</div>', unsafe_allow_html=True)
-
-    if "howto_seen" not in st.session_state:
-        st.session_state["howto_seen"] = False
-    with st.expander(
-        "How to use Emergency Escape",
-        expanded=not st.session_state["howto_seen"],
-    ):
-        st.markdown(
-            """
-**You wake in a Manila apartment. An earthquake hits. Which evacuate area is safest and fastest?**
-
-1. Pick **your apartment** (default or a nearby preset)
-2. **Click the map** (or Random) to place the **earthquake epicenter**
-3. Read the **recommended evacuate area** among candidates you may already know
-4. Press **Find safest & fastest escape** — **cyan Hybrid** · **gold Classical** · **white dashed Dijkstra**
-5. Scrub **`t`** — watch the red quake ring expand; compare travel times
-
-*Flood / bridge / multi-citizen sims stay on Command Center (God View).*
-            """
-        )
-        if st.button("Got it — hide next time", key="howto_ack"):
-            st.session_state["howto_seen"] = True
-            st.rerun()
 
     start_options = [n for n in nodes if n not in exits]
     if st.session_state["start_node"] not in start_options:
@@ -870,9 +908,47 @@ def main():
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
     # ==================================================================
-    # RIGHT PANEL (~1/3) — controls + ranking + metrics
+    # RIGHT PANEL (~1/3) — controls + ranking + metrics (independent scroll)
     # ==================================================================
     with panel_col:
+        flow = int(st.session_state.get("flow_step", 1))
+        steps_html = "".join(
+            f'<div class="qr-step'
+            f'{" active" if flow == i else ""}'
+            f'{" done" if flow > i else ""}'
+            f'"><b>{i}</b>{label}</div>'
+            for i, label in [
+                (1, "Apartment + quake"),
+                (2, "Rank evacuate areas"),
+                (3, "Calculate escape"),
+                (4, "Compare routes"),
+            ]
+        )
+        st.markdown(f'<div class="qr-steps">{steps_html}</div>', unsafe_allow_html=True)
+
+        if "howto_seen" not in st.session_state:
+            st.session_state["howto_seen"] = False
+        with st.expander(
+            "How to use Emergency Escape",
+            expanded=not st.session_state["howto_seen"],
+        ):
+            st.markdown(
+                """
+**You wake in a Manila apartment. An earthquake hits. Which evacuate area is safest and fastest?**
+
+1. Pick **your apartment** (default or a nearby preset)
+2. **Click the map** (or Random) to place the **earthquake epicenter**
+3. Read the **recommended evacuate area** among candidates you may already know
+4. Press **Find safest & fastest escape** — **cyan Hybrid** · **gold Classical** · **white dashed Dijkstra**
+5. Scrub **`t`** — watch the red quake ring expand; compare travel times
+
+*Flood / bridge / multi-citizen sims stay on Command Center (God View).*
+                """
+            )
+            if st.button("Got it — hide next time", key="howto_ack"):
+                st.session_state["howto_seen"] = True
+                st.rerun()
+
         badge = (
             f'<span class="qr-badge ok">PennyLane · {qstat["n_qubits"]}-qubit HQNN</span>'
             if pl_ok
@@ -883,6 +959,10 @@ def main():
             "<p style='color:#9AA8BC;font-size:0.85rem;margin:0.55rem 0 0 0'>"
             "Earthquake is the hazard. We rank known evacuate areas by "
             "<b style='color:#fff'>safety + speed</b>, then route you with Hybrid QML."
+            "</p>"
+            f"<p style='color:#9AA8BC;font-size:0.8rem;margin:0.45rem 0 0 0'>"
+            f"<b style='color:#fff'>Map click: {st.session_state.get('select_mode', 'Epicenter')}</b> — "
+            f"{st.session_state.get('map_status', 'Click the map to place the epicenter.')}"
             "</p></div>",
             unsafe_allow_html=True,
         )
@@ -1298,6 +1378,24 @@ def main():
                 '<div class="qr-panel"><h3>5 · Escape metrics</h3></div>',
                 unsafe_allow_html=True,
             )
+            radii_for_scrub = st.session_state.get("radii_trace")
+            if radii_for_scrub and path and len(path) >= 2:
+                max_t = max(0, len(radii_for_scrub) - 1)
+                prev_t = int(st.session_state.get("hazard_t_scrub", max_t))
+                if prev_t > max_t or "hazard_t_scrub" not in st.session_state:
+                    st.session_state["hazard_t_scrub"] = max_t
+                t_scrub = st.slider(
+                    "Scrub hazard time  t",
+                    0,
+                    max_t,
+                    key="hazard_t_scrub",
+                    help="Expanding earthquake (red) and exit congestion (gold).",
+                )
+                st.session_state["flow_step"] = max(st.session_state.get("flow_step", 4), 4)
+                st.session_state["_step_reveal"] = min(int(t_scrub) + 1, len(path) - 1)
+            else:
+                st.session_state.pop("_step_reveal", None)
+
             win = " win" if beats_classical or (reached and is_hybrid) else ""
             st.markdown(
                 f'<div class="qr-card hybrid{win}" style="margin-bottom:0.45rem">'
@@ -1398,8 +1496,16 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 "then press **Find safest & fastest escape**."
             )
 
+        st.markdown(
+            '<div class="qr-footer" style="display:block !important;margin-top:0.75rem">'
+            "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon 2026</span><br/>"
+            "<span>B2C Emergency Escape · 2D Folium · Quantum Intelligence. Human Relief.</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
     # ==================================================================
-    # LEFT MAP (~2/3) — Folium 2D only
+    # LEFT MAP (~2/3) — Folium 2D only (no vertical scroll; fills column)
     # ==================================================================
     with map_col:
         path = st.session_state.get("path")
@@ -1411,27 +1517,11 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
         ranking = st.session_state.get("exit_ranking") or []
 
-        t_show = 0
-        step_reveal = None
-        if radii_trace and path and len(path) >= 2:
-            max_t = max(0, len(radii_trace) - 1)
-            t_show = st.slider(
-                "Scrub hazard time  t",
-                0,
-                max_t,
-                max_t,
-                help="Expanding earthquake (red) and exit congestion (gold).",
-            )
+        t_show = int(st.session_state.get("hazard_t_scrub", 0)) if radii_trace else 0
+        step_reveal = st.session_state.get("_step_reveal")
+        if radii_trace and path and len(path) >= 2 and step_reveal is None:
+            t_show = max(0, len(radii_trace) - 1)
             step_reveal = min(t_show + 1, len(path) - 1)
-            st.session_state["flow_step"] = max(st.session_state.get("flow_step", 4), 4)
-
-        mode = st.session_state.get("select_mode", "Epicenter")
-        st.markdown(
-            f'<div class="qr-map-hint"><b>Map click: {mode}</b> — '
-            f'{st.session_state.get("map_status", "Click to place the epicenter.")}'
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
         st.markdown('<div class="qr-map-wrap">', unsafe_allow_html=True)
         m = build_base_map(
@@ -1562,7 +1652,7 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         map_data = st_folium(
             m,
             key="qr_map_b2c",
-            height=720,
+            height=900,
             use_container_width=True,
             returned_objects=["last_clicked"],
             center=st.session_state["map_center"],
@@ -1579,14 +1669,6 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                     st.session_state["_last_click_key"] = click_key
                     st.session_state["_map_click"] = (lat_c, lon_c)
                     st.rerun()
-
-    st.markdown(
-        '<div class="qr-footer">'
-        "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon 2026</span>"
-        "<span>B2C Emergency Escape · 2D Folium · Quantum Intelligence. Human Relief.</span>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":
