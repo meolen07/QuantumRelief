@@ -695,20 +695,6 @@ def main():
             st.session_state["map_status"] = f"Epicenter → {lat_r:.5f}, {lon_r:.5f}"
             st.rerun()
 
-        if st.button(
-            "Load advantage demo",
-            use_container_width=True,
-            type="secondary",
-            help="Curated scenario where Hybrid travel is strictly lower than Classical.",
-        ):
-            sc = _pick_advantage_scenario()
-            if sc is None:
-                st.warning("No advantage scenarios in data/demo_scenarios.json yet.")
-            else:
-                _apply_advantage_scenario(G, exits, sc)
-                st.session_state["_auto_run_route"] = True
-                st.rerun()
-
         ranking = st.session_state.get("exit_ranking") or []
         if ranking:
             best = ranking[0]
