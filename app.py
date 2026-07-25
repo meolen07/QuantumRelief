@@ -35,7 +35,7 @@ from src.quantum_hybrid import (
     ensure_hybrid_model,
     quantum_status,
 )
-from src.god_view import render_god_view, render_god_view_controls
+from src.god_view import init_god_view_state, render_god_view, render_god_view_controls
 from src.routing_service import (
     compare_three_way,
     dijkstra_escape_route,
@@ -595,6 +595,8 @@ def main():
     )
 
     if surface == "Command Center (God View)":
+        # Init session before sidebar widgets so epicenter / batch defaults stick
+        init_god_view_state(G, exits, origin)
         with st.sidebar:
             controls = render_god_view_controls()
         hybrid_model = mean = std = None
@@ -604,7 +606,7 @@ def main():
             except Exception as gv_exc:
                 st.warning(
                     f"Hybrid model unavailable for God View — {gv_exc}. "
-                    "Metrics still render; trigger will use Classical fallback paths."
+                    "Metrics still render; trigger uses Dijkstra bulk (no Hybrid heroes)."
                 )
         render_god_view(
             G,

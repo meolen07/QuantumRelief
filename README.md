@@ -73,6 +73,7 @@ Streamlit sidebar: **Load Quantum Advantage scenario** → auto-runs 3-way compa
 - **Quantum Advantage scenarios** — curated hard cases in the Streamlit sidebar
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
 - **Crisis UX** — Folium map-click Start / Epicenter / Exit
+- **Command Center (God View)** — B2G city-wide evacuation: flood / bridge hazards, arterial heatmap, Hybrid hero sample
 - **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 
@@ -161,6 +162,22 @@ Optional VN: *Chọn mode → click bản đồ → Calculate → kéo slider `t
 
 ---
 
+## How to use — Command Center (God View)
+
+B2G surface for commanders: monitor city-wide corridor stress while citizens use free B2C routing.
+
+1. Switch the top radio to **Command Center (God View)**
+2. Sidebar: set **Flood / sector hazard**, optionally **Block Main Highway Bridge**
+3. Keep batch at **8–10** (max 20). Hybrid QML runs only on ≤**4** hero agents; the rest is Dijkstra bulk for speed
+4. Optionally sync the **B2C epicenter**, or enter lat/lon manually
+5. Click **Trigger City-Wide Evacuation Simulation** (does **not** auto-run on tab open)
+6. Read metrics: **Simulated agents**, **Scaled citizens (narrative)**, escape success %, live quantum contribution, congestion alert, batch latency
+7. Map: **green** = Hybrid hero arterials · **cyan** = Dijkstra alternatives · **red** = danger / blocked bridge
+
+**Honest architecture:** Scaled citizens = `batch × 1,428` for pitch narrative (~14k at default batch 10). That is **not** 14k Hybrid inferences — only the small Hybrid sample runs QML; bulk fleet routing is Dijkstra on the hazard-weighted graph. Results cache until the next Trigger.
+
+---
+
 ## Project structure
 
 ```
@@ -180,6 +197,7 @@ QuantumRelief/
     film_model.py          # Classical FiLM
     quantum_hybrid.py      # PennyLane Hybrid PHN (+ quantum contribution %)
     routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
+    god_view.py            # B2G Command Center (Dijkstra bulk + Hybrid sample)
   scripts/
     retrain_models.py
     find_advantage_scenarios.py  # Search / save hard demo scenarios
