@@ -8,9 +8,10 @@ Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
 import folium
 import networkx as nx
@@ -44,7 +45,9 @@ from src.routing_service import (
     recommend_best_exit,
     route_overlap_accuracy as _rs_route_overlap,
 )
-from src.utils import get_graph_origin
+from src.utils import DATA_DIR, get_graph_origin
+
+DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
 
 st.set_page_config(
     page_title="QuantumRelief",
@@ -348,6 +351,97 @@ def _set_epicenter(lat: float, lon: float) -> None:
     st.session_state["epi_lon"] = float(lon)
 
 
+def _load_demo_scenarios() -> Dict[str, Any]:
+    """Curated strict Hybrid travel-win scenarios (data/demo_scenarios.json)."""
+    if not DEMO_SCENARIOS_PATH.exists():
+        return {}
+    try:
+        return json.loads(DEMO_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _pick_advantage_scenario(
+    payload: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Prefer default_scenario_id, else largest Δ(classical − hybrid)."""
+    payload = payload if payload is not None else _load_demo_scenarios()
+    scenarios = list(payload.get("scenarios") or [])
+    if not scenarios:
+        return None
+    default_id = payload.get("default_scenario_id")
+    if default_id:
+        for s in scenarios:
+            if s.get("id") == default_id:
+                return s
+    def _gap(s: Dict[str, Any]) -> float:
+        m = s.get("metrics") or {}
+        if "delta_c_minus_h" in m:
+            return float(m["delta_c_minus_h"])
+        ht = float(m.get("hybrid_time") or 0.0)
+        ct = float(m.get("classical_time") or 0.0)
+        return ct - ht
+
+    return max(scenarios, key=_gap)
+
+
+def _apply_advantage_scenario(G, exits, scenario: Dict[str, Any]) -> str:
+    """Load start / epicenter / exit from a curated advantage scenario."""
+    _clear_route_results()
+    start = scenario.get("start_node")
+    dest = scenario.get("dest_node")
+    if start is None or start not in G.nodes:
+        _set_location(
+            G,
+            exits,
+            float(scenario["start_lat"]),
+            float(scenario["start_lon"]),
+        )
+    else:
+        st.session_state["start_node"] = start
+        st.session_state["loc_lat"] = float(G.nodes[start]["y"])
+        st.session_state["loc_lon"] = float(G.nodes[start]["x"])
+        st.session_state["map_center"] = [
+            float(st.session_state["loc_lat"]),
+            float(st.session_state["loc_lon"]),
+        ]
+    _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
+    if dest is not None and dest in exits:
+        st.session_state["dest_node"] = dest
+        st.session_state["recommended_exit"] = dest
+        # Keep ranking in sync without overriding curated dest.
+        try:
+            _, ranking = recommend_best_exit(
+                G,
+                st.session_state["start_node"],
+                exits,
+                (
+                    float(st.session_state["epi_lon"]),
+                    float(st.session_state["epi_lat"]),
+                ),
+            )
+            st.session_state["exit_ranking"] = ranking
+        except Exception:
+            st.session_state["exit_ranking"] = []
+    else:
+        _refresh_exit_ranking(G, exits)
+    m = scenario.get("metrics") or {}
+    expected = ""
+    if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
+        expected = (
+            f" Expected H={float(m['hybrid_time']):.1f} "
+            f"< C={float(m['classical_time']):.1f}."
+        )
+    title = scenario.get("title") or scenario.get("id") or "advantage"
+    msg = (
+        f"Advantage demo · {title}.{expected} "
+        "Find route runs automatically on first load."
+    )
+    st.session_state["map_status"] = msg
+    st.session_state["advantage_scenario_id"] = scenario.get("id")
+    return msg
+
+
 def build_base_map(G, exits, map_center, map_zoom: int = 16):
     m = folium.Map(
         location=list(map_center),
@@ -531,6 +625,14 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, exits, nodes, origin)
 
+    # First paint: auto-load a strict Hybrid travel-win scenario when available.
+    if not st.session_state.get("_advantage_autoload_done"):
+        st.session_state["_advantage_autoload_done"] = True
+        sc0 = _pick_advantage_scenario()
+        if sc0 is not None:
+            _apply_advantage_scenario(G, exits, sc0)
+            st.session_state["_auto_run_route"] = True
+
     if "_map_click" in st.session_state:
         lat_p, lon_p = st.session_state.pop("_map_click")
         msg = _apply_map_click(G, exits, float(lat_p), float(lon_p))
@@ -593,6 +695,20 @@ def main():
             st.session_state["map_status"] = f"Epicenter → {lat_r:.5f}, {lon_r:.5f}"
             st.rerun()
 
+        if st.button(
+            "Load advantage demo",
+            use_container_width=True,
+            type="secondary",
+            help="Curated scenario where Hybrid travel is strictly lower than Classical.",
+        ):
+            sc = _pick_advantage_scenario()
+            if sc is None:
+                st.warning("No advantage scenarios in data/demo_scenarios.json yet.")
+            else:
+                _apply_advantage_scenario(G, exits, sc)
+                st.session_state["_auto_run_route"] = True
+                st.rerun()
+
         ranking = st.session_state.get("exit_ranking") or []
         if ranking:
             best = ranking[0]
@@ -614,6 +730,8 @@ def main():
             st.caption(qstat["note"])
 
         run = st.button("Find route", type="primary", use_container_width=True)
+        if st.session_state.pop("_auto_run_route", False):
+            run = True
         st.caption(
             f"{G.number_of_nodes()} nodes · {G.number_of_edges()} edges · "
             f"{st.session_state.get('map_status', '')}"
@@ -837,7 +955,8 @@ def main():
             else:
                 st.session_state.pop("_step_reveal", None)
 
-            win = " win" if beats_classical or (reached and is_hybrid) else ""
+            # Honest highlight: "win" only when Hybrid travel is strictly lower.
+            win = " win" if beats_classical else ""
             st.markdown(
                 f'<div class="qr-card hybrid{win}">'
                 f'<span class="qr-hero-pill">HERO</span>'
