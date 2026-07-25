@@ -5,6 +5,7 @@
   "hazard_intensity": 2.0,
   "oversample": 8,
   "n_hard_seeds": 5,
+  "reuse_dataset": true,
   "classical": {
     "train_acc": 0.8619811086254039,
     "val_acc": 0.8855633802816901,
@@ -12,15 +13,19 @@
     "best_epoch": 91.0
   },
   "hybrid": {
-    "phase_a_val_acc": 0.8895238095238095,
-    "phase_a_train_acc": 0.8568067226890757,
-    "best_val_loss": 0.2784194987728482,
-    "val_acc": 0.8895238095238095,
-    "train_acc": 0.8568067226890757,
-    "quantum_contrib_pct": 41.67093516581287
+    "phase_a_val_acc": 0.882051282051282,
+    "phase_a_train_acc": 0.8510407239819004,
+    "best_val_loss": 0.28461571381260187,
+    "phase_b_val_acc": 0.8994871794871795,
+    "phase_b_train_acc": 0.8673303167420815,
+    "val_acc": 0.8994871794871795,
+    "train_acc": 0.8673303167420815,
+    "quantum_contrib_pct": 82.40836514802807,
+    "combine_rebalanced": false
   },
   "routes": {
-    "n_trials": 24,
+    "n_trials": 28,
+    "n_hard_trials": 10,
     "exit_reached_pct": {
       "hybrid": 100.0,
       "classical": 100.0,
@@ -28,42 +33,44 @@
     },
     "assist_pct": 0.0,
     "mean_time": {
-      "hybrid": 10.373957742872317,
-      "classical": 9.831328382462347,
-      "dijkstra": 9.979987260901693
+      "hybrid": 12.034307277963743,
+      "classical": 11.980345592455071,
+      "dijkstra": 12.173549668498323
     },
     "mean_hops": {
-      "hybrid": 16.916666666666668,
-      "classical": 16.708333333333332,
-      "dijkstra": 19.791666666666668
+      "hybrid": 19.892857142857142,
+      "classical": 20.035714285714285,
+      "dijkstra": 24.285714285714285
     },
     "mean_overlap_pct": {
-      "hybrid": 57.36106026220849,
-      "classical": 63.50540934772665
+      "hybrid": 54.10832566492702,
+      "classical": 55.77404664410744
     },
-    "hybrid_beats_classical_pct": 83.33333333333333,
-    "hybrid_near_dijkstra_pct": 83.33333333333333,
-    "quantum_contrib_pct": 41.67093516581287,
+    "hybrid_beats_classical_pct": 75.0,
+    "hybrid_near_dijkstra_pct": 89.28571428571429,
+    "hybrid_travel_win_pct": 71.42857142857143,
+    "hybrid_overlap_win_pct": 64.28571428571429,
+    "quantum_contrib_pct": 82.40836514802807,
     "sample_trials": [
       {
-        "hybrid_time": 17.952223444181403,
+        "hybrid_time": 14.675579257528382,
+        "classical_time": 15.074063132384559,
+        "dijkstra_time": 14.675579257528382
+      },
+      {
+        "hybrid_time": 2.3471190624475016,
+        "classical_time": 2.3471190624475016,
+        "dijkstra_time": 2.3471190624475016
+      },
+      {
+        "hybrid_time": 23.190707243018608,
         "classical_time": 17.952223444181403,
         "dijkstra_time": 20.54788258945535
-      },
-      {
-        "hybrid_time": 7.355342490379057,
-        "classical_time": 7.261011194228791,
-        "dijkstra_time": 7.261011194228791
-      },
-      {
-        "hybrid_time": 15.053758013717594,
-        "classical_time": 15.053758013717594,
-        "dijkstra_time": 17.734789573245276
       }
     ]
   },
   "tagline": "Hybrid delivers near-Dijkstra quality with quantum-classical local inference",
-  "elapsed_sec": 1754.6,
+  "elapsed_sec": 6177.1,
   "checkpoints": {
     "classical": "/Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt",
     "hybrid": "/Users/nguyenhuynhmailinh/QuantumRelief/models/film_hybrid.pt",
@@ -72,11 +79,24 @@
   },
   "train_config": {
     "classical_epochs": 100,
-    "hybrid_phase_a": 10,
-    "hybrid_phase_b": 6,
-    "hybrid_max_samples": 3500,
+    "skip_classical": true,
+    "hybrid_phase_a": 20,
+    "hybrid_phase_b": 8,
+    "hybrid_max_samples": 6500,
+    "hard_repeats": 6,
     "hard": true,
     "hazard_intensity": 2.0,
-    "oversample": 8
+    "oversample": 8,
+    "reuse_dataset": true,
+    "eval_trials": 28
+  },
+  "goal_check": {
+    "hybrid_mean_travel_le_classical": false,
+    "hybrid_overlap_ge_classical": false,
+    "hybrid_travel_win_pct": 71.42857142857143,
+    "hybrid_near_dijkstra_pct": 89.28571428571429,
+    "exit_hybrid_pct": 100.0,
+    "delta_mean_travel_vs_classical": 0.05396168550867131,
+    "delta_overlap_vs_classical": -1.6657209791804206
   }
 }
