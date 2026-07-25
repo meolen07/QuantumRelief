@@ -18,14 +18,27 @@ import networkx as nx
 from .utils import Coord, edge_midpoint, get_graph_origin, project_local_km
 
 
-def damage_radius(t: float) -> float:
-    """Earthquake damage radius: r_epi = 0.5 + √(0.0002 × t)."""
-    return 0.5 + math.sqrt(0.0002 * t)
+def damage_radius(t: float, intensity: float = 1.0) -> float:
+    """
+    Earthquake damage radius (paper Sec. II C):
+
+      r_epi = 0.5 + √(0.0002 × t)
+
+    ``intensity`` (≥1) scales the radius for hard training labels without
+    changing the paper formula shape. Default 1.0 preserves inference / viz.
+    """
+    return float(intensity) * (0.5 + math.sqrt(0.0002 * t))
 
 
-def exit_radius(t: float) -> float:
-    """Traffic congestion radius: r_exit = √(0.00075 × t)."""
-    return math.sqrt(0.00075 * max(t, 0.0))
+def exit_radius(t: float, intensity: float = 1.0) -> float:
+    """
+    Traffic congestion radius (paper Sec. II C):
+
+      r_exit = √(0.00075 × t)
+
+    ``intensity`` scales the radius for hard-mode dataset generation.
+    """
+    return float(intensity) * math.sqrt(0.00075 * max(t, 0.0))
 
 
 def _apply_initial_earthquake(w: float, d_epi: float, r_epi: float) -> float:
@@ -91,18 +104,24 @@ class DynamicEnvironment:
 
     Coordinates for distance calculations use local km projection so that
     paper radii (r_epi ≈ 0.5 km at t=0) are meaningful on a district map.
+
+    ``hazard_intensity`` (default 1.0) widens radii and accelerates ongoing
+    penalty growth for hard training labels. Streamlit / routing inference
+    leave it at 1.0 so paper-scale dynamics are unchanged at demo time.
     """
 
     G: nx.Graph
     epicenter_lonlat: Coord
     exit_nodes: Sequence
     t: int = 0
+    hazard_intensity: float = 1.0
     origin: Coord = field(default_factory=lambda: (0.0, 0.0))
     epicenter_km: Coord = field(default_factory=lambda: (0.0, 0.0))
     exit_coords_km: Dict = field(default_factory=dict)
     _baseline_weights: Dict[Tuple, float] = field(default_factory=dict)
 
     def __post_init__(self):
+        self.hazard_intensity = max(float(self.hazard_intensity), 1e-6)
         self.origin = get_graph_origin(self.G)
         lon, lat = self.epicenter_lonlat
         self.epicenter_km = project_local_km(lon, lat, self.origin[0], self.origin[1])
@@ -127,8 +146,13 @@ class DynamicEnvironment:
             epicenter_lonlat=self.epicenter_lonlat,
             exit_nodes=list(self.exit_nodes),
             t=self.t,
+            hazard_intensity=self.hazard_intensity,
         )
         return env
+
+    @property
+    def _intensity(self) -> float:
+        return float(self.hazard_intensity)
 
     def _edge_center_km(self, u, v) -> Coord:
         mid = edge_midpoint(self.G, u, v)
@@ -146,7 +170,7 @@ class DynamicEnvironment:
 
     def apply_initial_earthquake(self) -> None:
         """Algorithm 1 step 3 — initial earthquake effect at t=0."""
-        r_epi = damage_radius(0)
+        r_epi = damage_radius(0, self._intensity)
         for u, v, data in self.G.edges(data=True):
             key = tuple(sorted((u, v)))
             w0 = self._baseline_weights[key]
@@ -162,14 +186,19 @@ class DynamicEnvironment:
 
         Paper: 'at each step, all w's are updated and used as the baseline
         values for the next step.'
+
+        Hard mode: radii grow with ``hazard_intensity``; ongoing √(c·t) terms
+        use t_eff = t × intensity so severe congestion appears in Dijkstra labels.
         """
-        r_epi = damage_radius(self.t)
-        r_ex = exit_radius(self.t)
+        intensity = self._intensity
+        r_epi = damage_radius(self.t, intensity)
+        r_ex = exit_radius(self.t, intensity)
+        t_eff = float(self.t) * intensity
         for u, v, data in self.G.edges(data=True):
             key = tuple(sorted((u, v)))
             w = self._baseline_weights[key]
-            w = _apply_ongoing_earthquake(w, self._d_epi(u, v), r_epi, self.t)
-            w = _apply_traffic(w, self._d_exit_min(u, v), r_ex, self.t)
+            w = _apply_ongoing_earthquake(w, self._d_epi(u, v), r_epi, t_eff)
+            w = _apply_traffic(w, self._d_exit_min(u, v), r_ex, t_eff)
             data["weight"] = w
             data["travel_time"] = w
             self._baseline_weights[key] = w
@@ -190,9 +219,10 @@ class DynamicEnvironment:
 
     def current_radii(self) -> Dict[str, float]:
         return {
-            "r_epi": damage_radius(self.t),
-            "r_exit": exit_radius(self.t),
+            "r_epi": damage_radius(self.t, self._intensity),
+            "r_exit": exit_radius(self.t, self._intensity),
             "t": float(self.t),
+            "hazard_intensity": self._intensity,
         }
 
 

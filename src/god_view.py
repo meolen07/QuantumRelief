@@ -7,7 +7,7 @@ network in one shot.
 
 Honest architecture (Streamlit Cloud CPU):
   - Bulk arterial heatmap → static Dijkstra on the hazard-weighted graph
-  - Hybrid QML only on a tiny hero sample (green quantum arterials)
+  - Hybrid QML only on a tiny hero sample (cyan quantum arterials)
   - Scaled-citizen metric is narrative (CITY_SCALE_PER_AGENT × batch), not
     14k Hybrid inferences
   - Never auto-run; cache last sim in session_state until Trigger is clicked
@@ -36,17 +36,20 @@ from src.utils import get_graph_origin
 # Cloud-safe defaults — Hybrid is expensive per citizen on CPU
 DEFAULT_BATCH_SIZE = 10
 MAX_BATCH_SIZE = 20
-HYBRID_HERO_SAMPLE = 4  # green quantum arterials for B2G story
+HYBRID_HERO_SAMPLE = 4  # cyan quantum arterials for B2G story
 HYBRID_MAX_STEPS = 28
 BRIDGE_PENALTY = 80.0
 FLOOD_BASE_MULT = 1.0
 # Pitch narrative only: default batch of 10 → ~14k "citizens under command"
 CITY_SCALE_PER_AGENT = 1_428
 
-# Map corridor colors — must stay visually distinct for judges
-HYBRID_ROUTE_COLOR = "#00FF66"  # bright lime hero corridors
-DIJKSTRA_ROUTE_COLOR = "#00E5FF"  # clear cyan bulk / alternatives
-HAZARD_ROUTE_COLOR = "#FF4D2E"  # red-orange blocked / danger
+# Map corridor colors — Crisis Core palette (match B2C / Lovable intro)
+HYBRID_ROUTE_COLOR = "#00E5FF"  # cyan Hybrid hero corridors
+DIJKSTRA_ROUTE_COLOR = "#E8EEF6"  # white/light Dijkstra bulk
+HAZARD_ROUTE_COLOR = "#FF4D6A"  # red/pink blocked / danger
+ORANGE_ACCENT = "#FF8A4C"
+EXIT_RING_COLOR = "#F5C542"  # gold exit congestion
+CLASSICAL_ROUTE_COLOR = "#F5C542"  # gold (legend parity with B2C)
 
 
 def _no_click(layer):
@@ -212,8 +215,8 @@ def run_evacuation_batch(
     """
     Fast city-wide batch for God View.
 
-    - Most agents: Dijkstra on hazard-weighted graph → cyan arterial heatmap
-    - Small Hybrid QML sample: green quantum arterials for the B2G story
+    - Most agents: Dijkstra on hazard-weighted graph → light arterial heatmap
+    - Small Hybrid QML sample: cyan quantum arterials for the B2G story
     """
     rng = np.random.default_rng(int(seed))
     candidates = [n for n in G.nodes() if n not in exits]
@@ -352,18 +355,17 @@ def _corridor_color(
     *,
     is_quantum: bool = False,
 ) -> str:
-    """Lime Hybrid heroes vs cyan Dijkstra bulk — never the same teal."""
+    """Cyan Hybrid heroes vs white/silver Dijkstra bulk."""
     if is_quantum:
         return HYBRID_ROUTE_COLOR
-    # Stay in the cyan family only (no teal/green mix that confuses judges)
     if max_count <= 0:
         return DIJKSTRA_ROUTE_COLOR
     frac = count / max_count
     if frac >= 0.45:
         return DIJKSTRA_ROUTE_COLOR
     if frac >= 0.22:
-        return "#00C4E0"
-    return "#00A8C8"
+        return "#A8B8CC"
+    return "#6B7A90"
 
 
 def _path_latlons(G: nx.Graph, path: Sequence) -> List[List[float]]:
@@ -441,7 +443,7 @@ def build_god_view_map(
         )
         _no_click(flood).add_to(m)
 
-    # 1) Dijkstra bulk first — cyan, thinner, slightly transparent
+    # 1) Dijkstra bulk first — light/white, thinner, slightly transparent
     if max_count > 0:
         ranked = sorted(edge_counts.items(), key=lambda kv: kv[1])
         for (u, v), count in ranked:
@@ -460,7 +462,7 @@ def build_god_view_map(
             )
             _no_click(line).add_to(m)
 
-    # 2) Hybrid hero corridors LAST — bright lime, thick (z-order = draw order)
+    # 2) Hybrid hero corridors LAST — cyan, thick (z-order = draw order)
     # Prefer full path polylines so hero routes stay continuous and visible.
     drawn_hybrid = False
     for path in hybrid_paths:
@@ -538,9 +540,9 @@ def build_god_view_map(
         marker = folium.CircleMarker(
             location=[G.nodes[ex]["y"], G.nodes[ex]["x"]],
             radius=9,
-            color="#ff6b1a",
+            color=EXIT_RING_COLOR,
             fill=True,
-            fill_color="#ff6b1a",
+            fill_color=EXIT_RING_COLOR,
             fill_opacity=0.9,
             popup=f"Safe haven {i + 1}",
         )
@@ -552,25 +554,25 @@ def build_god_view_map(
             ring = folium.Circle(
                 location=[G.nodes[ex]["y"], G.nodes[ex]["x"]],
                 radius=max(frac * r_exit * 1000.0, 10.0),
-                color="#f5c518",
+                color=EXIT_RING_COLOR,
                 weight=1,
                 fill=True,
-                fill_color="#f5c518",
+                fill_color=EXIT_RING_COLOR,
                 fill_opacity=op,
             )
             _no_click(ring).add_to(m)
 
     legend_html = f"""
     <div style="position:fixed;bottom:28px;left:28px;z-index:9999;
-         background:rgba(10,22,40,0.92);border:1px solid rgba(255,107,26,0.35);
+         background:rgba(10,15,30,0.92);border:1px solid rgba(0,229,255,0.28);
          border-radius:8px;padding:10px 14px;font-size:12px;color:#e8eef6;
          font-family:sans-serif;line-height:1.55;max-width:300px;
          pointer-events:none;">
-      <b style="color:#ff6b1a;letter-spacing:0.04em;">GOD VIEW LEGEND</b><br/>
+      <b style="color:{ORANGE_ACCENT};letter-spacing:0.04em;">GOD VIEW LEGEND</b><br/>
       <span style="color:{HAZARD_ROUTE_COLOR};">●</span> Danger / epicenter / blocked bridge<br/>
       <span style="color:{HYBRID_ROUTE_COLOR};">●</span> Quantum sample arterials (Hybrid hero)<br/>
       <span style="color:{DIJKSTRA_ROUTE_COLOR};">●</span> Alternate corridors (Dijkstra bulk)<br/>
-      <span style="color:#f5c518;">●</span> Exit congestion pressure<br/>
+      <span style="color:{EXIT_RING_COLOR};">●</span> Exit / safe haven (gold)<br/>
       <span style="color:#3b82f6;">●</span> Flood / sector hazard zone<br/>
       <span style="color:#a8bdd4;font-size:11px;">Hybrid = small sample · bulk = Dijkstra</span>
     </div>
@@ -901,8 +903,10 @@ def render_god_view(
         "<b>B2G / B2B:</b> Citizens escape free on the B2C tab. "
         "Here, commanders monitor <b>city-wide flows</b>, "
         "inject flood &amp; bridge failures, and rebalance the network in one trigger. "
-        "<b>Bright lime = Hybrid hero sample</b> · <b>Cyan = Dijkstra bulk</b> · "
-        "<b>Red-orange = danger / blocked</b>"
+        f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan = Hybrid hero sample</b> · "
+        f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White = Dijkstra bulk</b> · "
+        f"<b style='color:{HAZARD_ROUTE_COLOR}'>Red = danger / blocked</b> · "
+        f"<b style='color:{EXIT_RING_COLOR}'>Gold = exits</b>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1080,7 +1084,7 @@ def render_god_view(
 1. Commander sets **flood / sector hazard** and optional **bridge block**
 2. Graph copy receives Algorithm-1-style weight penalties
 3. **Dijkstra** routes the bulk batch → cyan arterial heatmap (seconds)
-4. **Hybrid QML** (`predict_escape_route`) runs on ≤{HYBRID_HERO_SAMPLE} hero agents → **green quantum arterials**
+4. **Hybrid QML** (`predict_escape_route`) runs on ≤{HYBRID_HERO_SAMPLE} hero agents → **cyan quantum arterials**
 5. Live **Quantum Contribution %** is read from the PHN `combine` layer — same formula as B2C
 6. **Scaled citizens** = simulated agents × {CITY_SCALE_PER_AGENT:,} — **narrative only**, not Hybrid inference count
 7. Result is **cached** until you click Trigger again (no re-run on tab switch / widget tweak)
