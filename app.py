@@ -443,6 +443,13 @@ def _apply_advantage_scenario(G, exits, scenario: Dict[str, Any]) -> str:
 
 
 def build_base_map(G, exits, map_center, map_zoom: int = 16):
+    """Stable basemap only (tiles + roads + exit dots).
+
+    Dynamic overlays (hazard rings, routes, start/epi markers) must go through
+    ``feature_group_to_add`` so streamlit-folium updates layers in place without
+    remounting tiles. Keep ``map_center`` / ``map_zoom`` fixed across reruns —
+    pass live view via ``st_folium(center=..., zoom=...)``.
+    """
     m = folium.Map(
         location=list(map_center),
         zoom_start=int(map_zoom),
@@ -571,6 +578,12 @@ def _init_session(G, exits, nodes, origin):
         ]
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
+    # Freeze basemap constructor args so st_folium's leaflet hash stays stable
+    # (live pan/zoom uses center=/zoom= args, not Map(location=...)).
+    if "_escape_base_center" not in st.session_state:
+        st.session_state["_escape_base_center"] = list(st.session_state["map_center"])
+    if "_escape_base_zoom" not in st.session_state:
+        st.session_state["_escape_base_zoom"] = int(st.session_state["map_zoom"])
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = "Click the map to set your location."
     if "exit_ranking" not in st.session_state:
@@ -1078,12 +1091,18 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         else:
             t_show = 0
 
+        # Basemap: frozen constructor center/zoom → stable leaflet hash → no tile remount.
         m = build_base_map(
             G,
             exits,
-            st.session_state["map_center"],
-            int(st.session_state.get("map_zoom", 16)),
+            st.session_state.get(
+                "_escape_base_center", st.session_state["map_center"]
+            ),
+            int(st.session_state.get("_escape_base_zoom", 16)),
         )
+
+        # Dynamic overlays update via feature_group_to_add (in-place layer swap).
+        fg = folium.FeatureGroup(name="qr_escape_dynamic")
 
         for row in ranking:
             color = HYBRID_ROUTE_COLOR if row.get("recommended") else ORANGE_ACCENT
@@ -1096,7 +1115,7 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 fill_color=color,
                 fill_opacity=0.9,
             )
-            _no_click(marker).add_to(m)
+            fg.add_child(_no_click(marker))
 
         # Paper Sec. II C / Algorithm 1: r_epi(t) = 0.5 + √(0.0002·t) km
         r_epi = float(damage_radius(float(t_show)))
@@ -1115,7 +1134,7 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 fill_color=HAZARD_ROUTE_COLOR,
                 fill_opacity=op,
             )
-            _no_click(ring).add_to(m)
+            fg.add_child(_no_click(ring))
 
         exit_lat = G.nodes[dest_draw]["y"]
         exit_lon = G.nodes[dest_draw]["x"]
@@ -1129,26 +1148,32 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 fill_color=EXIT_RING_COLOR,
                 fill_opacity=op,
             )
-            _no_click(ring).add_to(m)
+            fg.add_child(_no_click(ring))
 
-        _no_click(
-            folium.Marker(
-                [epi[1], epi[0]],
-                icon=folium.Icon(color="red", icon="warning-sign"),
+        fg.add_child(
+            _no_click(
+                folium.Marker(
+                    [epi[1], epi[0]],
+                    icon=folium.Icon(color="red", icon="warning-sign"),
+                )
             )
-        ).add_to(m)
-        _no_click(
-            folium.Marker(
-                [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-                icon=folium.Icon(color="blue", icon="home"),
+        )
+        fg.add_child(
+            _no_click(
+                folium.Marker(
+                    [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
+                    icon=folium.Icon(color="blue", icon="home"),
+                )
             )
-        ).add_to(m)
-        _no_click(
-            folium.Marker(
-                [exit_lat, exit_lon],
-                icon=folium.Icon(color="orange", icon="flag"),
+        )
+        fg.add_child(
+            _no_click(
+                folium.Marker(
+                    [exit_lat, exit_lon],
+                    icon=folium.Icon(color="orange", icon="flag"),
+                )
             )
-        ).add_to(m)
+        )
 
         route_label = st.session_state.get("model_used", "Hybrid QML (HQNN)")
         if st.session_state.get("is_hybrid_route", "Hybrid" in str(route_label)):
@@ -1156,60 +1181,68 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
 
         if dij_path and len(dij_path) >= 2:
             coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
-            _no_click(
-                folium.PolyLine(
-                    coords_d,
-                    color=DIJKSTRA_ROUTE_COLOR,
-                    weight=3,
-                    opacity=0.75,
-                    dash_array="8 10",
+            fg.add_child(
+                _no_click(
+                    folium.PolyLine(
+                        coords_d,
+                        color=DIJKSTRA_ROUTE_COLOR,
+                        weight=3,
+                        opacity=0.75,
+                        dash_array="8 10",
+                    )
                 )
-            ).add_to(m)
+            )
 
         if classical_path and len(classical_path) >= 2:
             coords_c = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path]
-            _no_click(
-                folium.PolyLine(
-                    coords_c,
-                    color=CLASSICAL_ROUTE_COLOR,
-                    weight=4,
-                    opacity=0.88,
+            fg.add_child(
+                _no_click(
+                    folium.PolyLine(
+                        coords_c,
+                        color=CLASSICAL_ROUTE_COLOR,
+                        weight=4,
+                        opacity=0.88,
+                    )
                 )
-            ).add_to(m)
+            )
 
         if path and len(path) >= 2:
             end_i = step_reveal if step_reveal is not None else len(path) - 1
             partial = path[: end_i + 1]
             coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
-            _no_click(
-                folium.PolyLine(
-                    coords,
-                    color=HYBRID_ROUTE_COLOR,
-                    weight=6,
-                    opacity=0.95,
-                )
-            ).add_to(m)
-            for n in partial:
+            fg.add_child(
                 _no_click(
-                    folium.CircleMarker(
-                        [G.nodes[n]["y"], G.nodes[n]["x"]],
-                        radius=4,
+                    folium.PolyLine(
+                        coords,
                         color=HYBRID_ROUTE_COLOR,
-                        fill=True,
-                        fill_opacity=0.95,
+                        weight=6,
+                        opacity=0.95,
                     )
-                ).add_to(m)
+                )
+            )
+            for n in partial:
+                fg.add_child(
+                    _no_click(
+                        folium.CircleMarker(
+                            [G.nodes[n]["y"], G.nodes[n]["x"]],
+                            radius=4,
+                            color=HYBRID_ROUTE_COLOR,
+                            fill=True,
+                            fill_opacity=0.95,
+                        )
+                    )
+                )
 
-        # Key includes t so Folium remounts when hazard rings resize (static key
-        # leaves stale Circle radii after scrubbing).
+        # Stable key + feature_group_to_add: basemap/tiles persist; rings/path swap.
         map_data = st_folium(
             m,
-            key=f"qr_map_escape_t{t_show}",
+            key="qr_map_escape",
             height=MAP_H,
             use_container_width=True,
             returned_objects=["last_clicked"],
             center=st.session_state["map_center"],
             zoom=int(st.session_state.get("map_zoom", 16)),
+            feature_group_to_add=fg,
         )
 
         if map_data and map_data.get("last_clicked"):
