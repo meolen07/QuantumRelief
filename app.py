@@ -53,133 +53,184 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Crisis aesthetic: navy + safety orange (hackathon visual-first) ---
+# --- Crisis Core aesthetic (Lovable-aligned): deep navy + cyan Hybrid + gold Classical ---
+# Map route palette (shared with Folium overlays + God View)
+HYBRID_ROUTE_COLOR = "#00E5FF"
+CLASSICAL_ROUTE_COLOR = "#F5C542"
+DIJKSTRA_ROUTE_COLOR = "#E8EEF6"
+HAZARD_ROUTE_COLOR = "#FF4D6A"
+EXIT_RING_COLOR = "#F5C542"
+ORANGE_ACCENT = "#FF8A4C"
+
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
     :root {
-      --qr-navy: #0a1628;
-      --qr-deep: #12233d;
-      --qr-panel: #162a45;
-      --qr-orange: #ff6b1a;
-      --qr-amber: #f5c518;
-      --qr-green: #2ecc71;
-      --qr-cyan: #22d3ee;
-      --qr-dij: #c0392b;
-      --qr-mist: #a8bdd4;
-      --qr-ink: #e8eef6;
+      --qr-bg: #0a0b10;
+      --qr-navy: #0a0f1e;
+      --qr-deep: #0e1528;
+      --qr-panel: rgba(14, 22, 40, 0.78);
+      --qr-cyan: #00E5FF;
+      --qr-gold: #F5C542;
+      --qr-orange: #FF8A4C;
+      --qr-hazard: #FF4D6A;
+      --qr-dij: #E8EEF6;
+      --qr-mist: #9AA8BC;
+      --qr-ink: #E8EEF6;
     }
     .stApp {
-      background: radial-gradient(1200px 600px at 20% -10%, #1a3358 0%, #0a1628 55%, #070f1a 100%);
+      background:
+        radial-gradient(900px 480px at 18% -8%, rgba(0,229,255,0.10) 0%, transparent 55%),
+        radial-gradient(700px 400px at 88% 12%, rgba(255,138,76,0.07) 0%, transparent 50%),
+        linear-gradient(180deg, #0a0f1e 0%, #0a0b10 55%, #07080d 100%);
       color: var(--qr-ink);
-      font-family: 'IBM Plex Sans', sans-serif;
+      font-family: 'DM Sans', system-ui, sans-serif;
     }
     h1, h2, h3, h4 {
-      font-family: 'Barlow Condensed', 'IBM Plex Sans', sans-serif !important;
-      letter-spacing: 0.02em;
+      font-family: 'DM Sans', system-ui, sans-serif !important;
+      letter-spacing: -0.01em;
       color: #f4f7fb !important;
     }
     [data-testid="stSidebar"] {
-      background: linear-gradient(180deg, #0c1a2e 0%, #12233d 100%);
-      border-right: 1px solid rgba(255,107,26,0.18);
+      background: linear-gradient(180deg, #0a0f1e 0%, #0c1220 100%);
+      border-right: 1px solid rgba(0,229,255,0.12);
     }
     [data-testid="stSidebar"] .block-container { padding-top: 1rem; }
+    .qr-header {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem;
+      margin: 0 0 0.35rem 0;
+    }
     .qr-brand {
-      font-family: 'Barlow Condensed', sans-serif;
-      font-size: 2.85rem;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 2.35rem;
       font-weight: 700;
       color: #f4f7fb;
       margin: 0;
       line-height: 1.05;
+      letter-spacing: -0.02em;
     }
-    .qr-brand span { color: var(--qr-orange); }
+    .qr-brand span { color: var(--qr-cyan); }
+    .qr-online {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase; padding: 0.32rem 0.75rem;
+      border-radius: 999px;
+      color: var(--qr-cyan);
+      background: rgba(0,229,255,0.10);
+      border: 1px solid rgba(0,229,255,0.35);
+      box-shadow: 0 0 18px rgba(0,229,255,0.12);
+    }
+    .qr-online .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--qr-cyan);
+      box-shadow: 0 0 8px rgba(0,229,255,0.8);
+    }
     .qr-tagline {
-      font-family: 'Barlow Condensed', sans-serif;
-      font-size: 1.35rem;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 1.15rem;
       font-weight: 600;
       color: #fff;
-      letter-spacing: 0.04em;
-      margin: 0.2rem 0 0.15rem 0;
+      letter-spacing: -0.01em;
+      margin: 0.15rem 0 0.1rem 0;
     }
     .qr-tag {
       color: var(--qr-mist);
-      font-size: 0.95rem;
-      margin: 0.15rem 0 0.85rem 0;
+      font-size: 0.92rem;
+      margin: 0.1rem 0 0.75rem 0;
     }
     .qr-team {
       display: inline-flex; flex-wrap: wrap; gap: 0.45rem; align-items: center;
-      margin: 0 0 0.9rem 0;
+      margin: 0 0 0.85rem 0;
     }
     .qr-team .chip {
-      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.05em;
-      text-transform: uppercase; padding: 0.22rem 0.55rem; border-radius: 4px;
-      border: 1px solid rgba(255,107,26,0.35); color: #ff9a5a;
-      background: rgba(255,107,26,0.1);
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em;
+      text-transform: uppercase; padding: 0.28rem 0.7rem; border-radius: 999px;
+      border: 1px solid rgba(255,138,76,0.4); color: #ffb08a;
+      background: rgba(255,138,76,0.1);
     }
     .qr-team .chip.soft {
-      border-color: rgba(168,189,212,0.25); color: var(--qr-mist);
-      background: rgba(22,42,69,0.6);
+      border-color: rgba(154,168,188,0.28); color: var(--qr-mist);
+      background: rgba(14,22,40,0.65);
     }
     .qr-steps {
       display: flex; gap: 0.45rem; flex-wrap: wrap;
       margin-bottom: 0.85rem;
     }
     .qr-step {
-      background: rgba(22,42,69,0.85);
-      border: 1px solid rgba(168,189,212,0.2);
-      border-radius: 6px;
-      padding: 0.45rem 0.8rem;
-      font-size: 0.82rem;
+      background: rgba(14,22,40,0.85);
+      border: 1px solid rgba(154,168,188,0.18);
+      border-radius: 999px;
+      padding: 0.42rem 0.85rem;
+      font-size: 0.8rem;
       color: var(--qr-mist);
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .qr-step b { color: var(--qr-orange); margin-right: 0.35rem; }
+    .qr-step b { color: var(--qr-cyan); margin-right: 0.35rem; }
     .qr-step.active {
-      border-color: var(--qr-orange);
+      border-color: rgba(0,229,255,0.55);
       color: #fff;
-      box-shadow: 0 0 0 1px rgba(255,107,26,0.35), 0 0 18px rgba(255,107,26,0.12);
-      background: rgba(255,107,26,0.12);
+      box-shadow: 0 0 0 1px rgba(0,229,255,0.25), 0 0 20px rgba(0,229,255,0.14);
+      background: rgba(0,229,255,0.12);
     }
     .qr-step.done {
-      border-color: rgba(46,204,113,0.4);
-      color: #b8f0cd;
+      border-color: rgba(0,229,255,0.35);
+      color: #9eecf8;
     }
     .qr-card {
-      background: rgba(22,42,69,0.9);
-      border: 1px solid rgba(168,189,212,0.22);
-      border-radius: 10px;
-      padding: 0.9rem 1rem;
+      background: linear-gradient(160deg, rgba(16,24,42,0.92), rgba(10,15,30,0.88));
+      border: 1px solid rgba(154,168,188,0.16);
+      border-radius: 18px;
+      padding: 1rem 1.05rem;
       height: 100%;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+      position: relative;
     }
     .qr-card.win {
-      border-color: rgba(46,204,113,0.55);
-      box-shadow: 0 0 0 1px rgba(46,204,113,0.18), inset 0 0 24px rgba(46,204,113,0.06);
+      border-color: rgba(0,229,255,0.5);
+      box-shadow: 0 0 0 1px rgba(0,229,255,0.18), 0 8px 32px rgba(0,229,255,0.08);
+    }
+    .qr-card.hybrid {
+      border-color: rgba(0,229,255,0.45);
+      box-shadow: 0 0 24px rgba(0,229,255,0.1);
+    }
+    .qr-card.classical { border-color: rgba(245,197,66,0.35); }
+    .qr-card.dijkstra { border-color: rgba(232,238,246,0.22); }
+    .qr-hero-pill {
+      position: absolute; top: 0.75rem; right: 0.75rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 999px;
+      color: #041018; background: var(--qr-cyan);
+      box-shadow: 0 0 14px rgba(0,229,255,0.45);
     }
     .qr-card .label {
       color: var(--qr-mist);
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.07em;
       margin-bottom: 0.35rem;
+      padding-right: 3.2rem;
     }
     .qr-card .value {
-      font-family: 'Barlow Condensed', sans-serif;
+      font-family: 'DM Sans', system-ui, sans-serif;
       font-size: 1.85rem;
       font-weight: 700;
       color: #fff;
       line-height: 1.1;
     }
-    .qr-card .value.accent { color: var(--qr-green); }
+    .qr-card .value.accent { color: var(--qr-cyan); }
+    .qr-card .value.gold { color: var(--qr-gold); }
+    .qr-card .value.dij { color: var(--qr-dij); }
     .qr-card .sub {
       color: var(--qr-mist);
-      font-size: 0.85rem;
-      margin-top: 0.25rem;
+      font-size: 0.82rem;
+      margin-top: 0.3rem;
     }
     .qr-ro {
-      background: rgba(10,22,40,0.55);
-      border: 1px solid rgba(168,189,212,0.18);
-      border-radius: 8px;
+      background: rgba(10,15,30,0.65);
+      border: 1px solid rgba(154,168,188,0.16);
+      border-radius: 14px;
       padding: 0.55rem 0.75rem;
       font-size: 0.82rem;
       color: var(--qr-mist);
@@ -188,77 +239,98 @@ st.markdown(
     .qr-ro strong { color: #fff; }
     .qr-badge {
       display: inline-block;
-      padding: 0.35rem 0.7rem;
-      border-radius: 4px;
-      font-size: 0.8rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
       font-weight: 700;
       letter-spacing: 0.04em;
     }
     .qr-badge.ok {
-      background: rgba(46,204,113,0.2); color: #2ecc71;
-      border: 1px solid rgba(46,204,113,0.45);
-      box-shadow: 0 0 16px rgba(46,204,113,0.12);
+      background: rgba(0,229,255,0.14); color: var(--qr-cyan);
+      border: 1px solid rgba(0,229,255,0.4);
+      box-shadow: 0 0 16px rgba(0,229,255,0.14);
     }
     .qr-badge.warn {
-      background: rgba(255,107,26,0.15); color: #ff9a5a;
-      border: 1px solid rgba(255,107,26,0.35);
+      background: rgba(255,138,76,0.12); color: #ffb08a;
+      border: 1px solid rgba(255,138,76,0.35);
     }
     .qr-click-panel {
-      background: linear-gradient(135deg, rgba(255,107,26,0.14), rgba(22,42,69,0.9));
-      border: 1px solid rgba(255,107,26,0.4);
-      border-radius: 10px;
-      padding: 0.75rem 0.85rem;
+      background: linear-gradient(135deg, rgba(0,229,255,0.08), rgba(14,22,40,0.92));
+      border: 1px solid rgba(0,229,255,0.28);
+      border-radius: 16px;
+      padding: 0.8rem 0.9rem;
       margin: 0.4rem 0 0.7rem 0;
     }
     .qr-click-panel .title {
-      font-family: 'Barlow Condensed', sans-serif;
-      font-size: 1.05rem; font-weight: 700; color: #fff;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 0.98rem; font-weight: 700; color: #fff;
       margin-bottom: 0.25rem;
     }
     .qr-footer {
       margin-top: 1.5rem; padding-top: 0.85rem;
-      border-top: 1px solid rgba(168,189,212,0.15);
+      border-top: 1px solid rgba(154,168,188,0.12);
       color: var(--qr-mist); font-size: 0.8rem;
       display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: space-between;
     }
     .qr-map-hint {
-      background: rgba(22,42,69,0.75);
-      border-left: 3px solid var(--qr-orange);
+      background: rgba(14,22,40,0.72);
+      border-left: 3px solid var(--qr-cyan);
+      border-radius: 0 12px 12px 0;
       padding: 0.55rem 0.85rem;
       margin: 0.35rem 0 0.65rem 0;
       color: var(--qr-mist); font-size: 0.9rem;
     }
     .qr-map-hint b { color: #fff; }
     div[data-testid="stMetricValue"] { color: #f4f7fb; }
-    div[data-testid="stSidebar"] button[kind="primary"] {
+    /* Primary CTAs — cyan glow pills */
+    div[data-testid="stSidebar"] button[kind="primary"],
+    button[kind="primary"] {
       font-weight: 700 !important;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.04em;
       min-height: 3rem;
+      border-radius: 999px !important;
+      background: linear-gradient(135deg, #00E5FF 0%, #00B8D4 100%) !important;
+      color: #041018 !important;
+      border: none !important;
+      box-shadow: 0 0 22px rgba(0,229,255,0.35), 0 4px 14px rgba(0,0,0,0.25) !important;
+    }
+    div[data-testid="stSidebar"] button[kind="secondary"],
+    button[kind="secondary"] {
+      border-radius: 999px !important;
+      border: 1px solid rgba(154,168,188,0.28) !important;
+      background: rgba(14,22,40,0.7) !important;
+      color: var(--qr-ink) !important;
+    }
+    /* Active place-mode pill (cyan fill) */
+    div[data-testid="stSidebar"] button[kind="primary"].place-active,
+    button[data-testid="baseButton-primary"] {
+      /* covered by primary rule above */
     }
     section.main .block-container { padding-top: 1.1rem; max-width: 1400px; }
-    /* Top-level surface switcher (tab-equivalent, sidebar-aware) */
+    /* Top-level surface switcher */
     div[data-testid="stRadio"] > div {
       gap: 0.35rem;
-      background: rgba(10,22,40,0.55);
-      border: 1px solid rgba(168,189,212,0.2);
-      border-radius: 10px;
-      padding: 0.35rem;
+      background: rgba(10,15,30,0.65);
+      border: 1px solid rgba(154,168,188,0.16);
+      border-radius: 999px;
+      padding: 0.3rem;
     }
     div[data-testid="stRadio"] label {
       background: transparent !important;
-      border-radius: 8px !important;
-      padding: 0.45rem 0.9rem !important;
-      font-family: 'Barlow Condensed', sans-serif !important;
+      border-radius: 999px !important;
+      padding: 0.45rem 0.95rem !important;
+      font-family: 'DM Sans', system-ui, sans-serif !important;
       font-weight: 600 !important;
-      font-size: 1.05rem !important;
-      letter-spacing: 0.03em;
+      font-size: 0.95rem !important;
+      letter-spacing: 0.02em;
       color: var(--qr-mist) !important;
     }
     div[data-testid="stRadio"] label[data-checked="true"],
     div[data-testid="stRadio"] label:has(input:checked) {
-      background: rgba(255,107,26,0.18) !important;
+      background: rgba(0,229,255,0.16) !important;
       color: #fff !important;
-      border: 1px solid rgba(255,107,26,0.45);
+      border: 1px solid rgba(0,229,255,0.4);
+      box-shadow: 0 0 16px rgba(0,229,255,0.12);
     }
     </style>
     """,
@@ -337,7 +409,7 @@ def build_base_map(G, exits, map_center, map_zoom: int = 16):
         v_lat, v_lon = G.nodes[v]["y"], G.nodes[v]["x"]
         line = folium.PolyLine(
             [[u_lat, u_lon], [v_lat, v_lon]],
-            color="#3a5678",
+            color="#2a3548",
             weight=1.5,
             opacity=0.4,
         )
@@ -347,9 +419,9 @@ def build_base_map(G, exits, map_center, map_zoom: int = 16):
         marker = folium.CircleMarker(
             location=[G.nodes[ex]["y"], G.nodes[ex]["x"]],
             radius=8,
-            color="#ff6b1a",
+            color=ORANGE_ACCENT,
             fill=True,
-            fill_color="#ff6b1a",
+            fill_color=ORANGE_ACCENT,
             fill_opacity=0.85,
             popup=f"Exit {i + 1}",
         )
@@ -534,23 +606,28 @@ def _apply_map_click(G, exits, lat: float, lon: float) -> str:
 
 def main():
     st.markdown(
-        '<div class="qr-brand">Quantum<span>Relief</span></div>',
+        '<div class="qr-header">'
+        '<div class="qr-brand">Quantum<span>Relief</span></div>'
+        '<span class="qr-online"><span class="dot"></span>⚡ Hybrid QML · Online</span>'
+        "</div>",
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Quantum Intelligence. Human Relief.</div>',
+        '<div class="qr-tagline">Strategic Crisis Core · Manila · Intramuros</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Hybrid delivers near-Dijkstra quality with quantum-classical local inference</div>',
+        '<div class="qr-tag">Click the map to place. Scrub time to watch routes adapt.</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<div class="qr-map-hint" style="margin-top:0.15rem">'
-        "<b>Real-world impact:</b> Disaster evacuation under expanding quake + exit traffic. "
-        "Classical routers overload on dynamic weights — QuantumRelief runs <b>local Hybrid QML</b> "
-        "inference so fleets keep moving. "
-        "<b>Bold green = Hybrid QML</b> · <b>Cyan = Classical FiLM</b> · <b>Dashed = Dijkstra</b>"
+        "<b>First quantum-powered emergency routing:</b> Hybrid QML + Classical FiLM + Dijkstra "
+        "under live hazard sweeps. "
+        f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan = Hybrid QML</b> · "
+        f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold = Classical FiLM</b> · "
+        f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White dashed = Dijkstra</b> · "
+        f"<b style='color:{HAZARD_ROUTE_COLOR}'>Red = hazard</b>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -645,14 +722,14 @@ def main():
             """
 **Crisis escape demo — 6 steps**
 
-1. **Choose click mode** — sidebar radio: **Start | Epicenter | Exit**
+1. **Choose click mode** — sidebar: **PLACE START / EPICENTER / EXIT**
 2. **Click the map** — points snap to the road graph (or open *Advanced / manual select*)
 3. Keep **Hybrid QML** as the hero — Classical + Dijkstra overlays default ON
-4. Press **Calculate Escape Route** — **bold green Hybrid** · **cyan Classical** · **dashed Dijkstra**
-5. **Scrub time `t`** — watch red \(r_{epi}\) and yellow \(r_{exit}\) expand
+4. Press **Calculate Escape Route** — **cyan Hybrid** · **gold Classical** · **white dashed Dijkstra**
+5. **Scrub time `t`** — watch red \(r_{epi}\) and gold \(r_{exit}\) expand
 6. **Compare metrics** — Hybrid should beat Classical and approach Dijkstra
 
-*Gợi ý:* Chọn mode → click bản đồ → Calculate → kéo slider `t`.
+*Gợi ý:* PLACE mode → click bản đồ → Calculate → kéo slider `t`.
             """
         )
         if st.button("Got it — hide next time", key="howto_ack"):
@@ -691,33 +768,42 @@ def main():
         with st.expander("How to use", expanded=False):
             st.markdown(
                 """
-1. Select **Start / Epicenter / Exit**
+1. Tap **PLACE START / EPICENTER / EXIT**
 2. **Click the map** (auto-advances)
 3. Keep **Hybrid QML** hero + comparison overlays ON
 4. **Calculate Escape Route**
 5. Scrub **`t`** for hazard rings
-6. Read **3-way**: green Hybrid · cyan Classical · dashed Dijkstra
+6. Read **3-way**: cyan Hybrid · gold Classical · white dashed Dijkstra
 
-*Mode → click → Calculate → scrub `t`.*
+*PLACE → click → Calculate → scrub `t`.*
                 """
             )
 
         st.markdown(
             '<div class="qr-click-panel"><div class="title">'
-            "Click map to set: Start | Epicenter | Exit</div>"
-            "<div style='color:#a8bdd4;font-size:0.82rem'>"
-            "Pick a mode, click the map — mode auto-advances. "
+            "Placement — click the map</div>"
+            "<div style='color:#9AA8BC;font-size:0.82rem'>"
+            "Active mode fills cyan. Click advances Start → Epicenter → Exit. "
             "Start/Exit snap to the nearest node.</div></div>",
             unsafe_allow_html=True,
         )
-        st.radio(
-            "Selecting",
-            options=["Start", "Epicenter", "Exit"],
-            key="select_mode",
-            horizontal=True,
-            label_visibility="collapsed",
-            help="What the next map click sets.",
-        )
+        _mode = st.session_state.get("select_mode", "Start")
+        pc1, pc2, pc3 = st.columns(3)
+        for col, val, label in (
+            (pc1, "Start", "PLACE START"),
+            (pc2, "Epicenter", "PLACE EPICENTER"),
+            (pc3, "Exit", "PLACE EXIT"),
+        ):
+            with col:
+                if st.button(
+                    label,
+                    key=f"place_btn_{val}",
+                    use_container_width=True,
+                    type="primary" if _mode == val else "secondary",
+                    help=f"Next map click sets {val}.",
+                ):
+                    st.session_state["select_mode"] = val
+                    st.rerun()
         st.caption(st.session_state.get("map_status", ""))
 
         st.markdown(
@@ -796,8 +882,8 @@ def main():
 
         st.markdown("### Hybrid QML · 3-way compare")
         st.caption(
-            "**Bold green = Hybrid QML** · **Cyan = Classical FiLM** · "
-            "**Dashed = Dijkstra**. Evacuation under dynamic traffic — "
+            "**Cyan = Hybrid QML** · **Gold = Classical FiLM** · "
+            "**White dashed = Dijkstra**. Evacuation under dynamic traffic — "
             "local Hybrid inference when classical routers overload."
         )
         if pl_ok:
@@ -806,12 +892,12 @@ def main():
             st.warning("PennyLane unavailable — Classical FiLM ablation only.")
 
         compare_classical = st.checkbox(
-            "Show Classical FiLM (cyan)",
+            "Show Classical FiLM (gold)",
             value=True,
             help="Ablation overlay — same FiLM without the quantum PHN branch.",
         )
         compare_dij = st.checkbox(
-            "Show Classical Dijkstra (dashed)",
+            "Show Dijkstra (white dashed)",
             value=True,
             help="Optimal baseline under the same Algorithm 1 dynamics (full weights).",
         )
@@ -1041,25 +1127,25 @@ def main():
         ring = folium.Circle(
             location=[epi[1], epi[0]],
             radius=frac * r_epi * 1000.0,
-            color="#e74c3c",
+            color=HAZARD_ROUTE_COLOR,
             weight=2 if frac == 1.0 else 1,
             fill=True,
-            fill_color="#e74c3c",
+            fill_color=HAZARD_ROUTE_COLOR,
             fill_opacity=op,
         )
         _no_click(ring).add_to(m)
 
-    # Yellow congestion around chosen exit
+    # Gold congestion around chosen exit
     exit_lat = G.nodes[dest_draw]["y"]
     exit_lon = G.nodes[dest_draw]["x"]
     for frac, op in [(1.0, 0.10), (0.75, 0.16), (0.5, 0.22)]:
         ring = folium.Circle(
             location=[exit_lat, exit_lon],
             radius=max(frac * r_exit * 1000.0, 12.0),
-            color="#f5c518",
+            color=EXIT_RING_COLOR,
             weight=2 if frac == 1.0 else 1,
             fill=True,
-            fill_color="#f5c518",
+            fill_color=EXIT_RING_COLOR,
             fill_opacity=op,
         )
         _no_click(ring).add_to(m)
@@ -1074,7 +1160,7 @@ def main():
     _no_click(
         folium.Marker(
             [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-            icon=folium.Icon(color="green", icon="play"),
+            icon=folium.Icon(color="blue", icon="play"),
         )
     ).add_to(m)
     _no_click(
@@ -1093,9 +1179,9 @@ def main():
         coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
         dij_line = folium.PolyLine(
             coords_d,
-            color="#c0392b",
+            color=DIJKSTRA_ROUTE_COLOR,
             weight=3,
-            opacity=0.7,
+            opacity=0.75,
             dash_array="8 10",
             popup="Dijkstra · full dynamic weights (oracle baseline)",
         )
@@ -1105,9 +1191,9 @@ def main():
         coords_c = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path]
         class_line = folium.PolyLine(
             coords_c,
-            color="#22d3ee",
+            color=CLASSICAL_ROUTE_COLOR,
             weight=4,
-            opacity=0.85,
+            opacity=0.88,
             popup="Classical FiLM (ablation)",
         )
         _no_click(class_line).add_to(m)
@@ -1118,7 +1204,7 @@ def main():
         coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
         route = folium.PolyLine(
             coords,
-            color="#2ecc71",
+            color=HYBRID_ROUTE_COLOR,
             weight=6,
             opacity=0.95,
             popup=f"{route_label} escape route",
@@ -1128,7 +1214,7 @@ def main():
             dot = folium.CircleMarker(
                 [G.nodes[n]["y"], G.nodes[n]["x"]],
                 radius=4,
-                color="#2ecc71",
+                color=HYBRID_ROUTE_COLOR,
                 fill=True,
                 fill_opacity=0.95,
             )
@@ -1212,9 +1298,11 @@ def main():
         with t1:
             win = " win" if beats_classical or (reached and is_hybrid) else ""
             st.markdown(
-                f'<div class="qr-card{win}"><div class="label">Travel time · Hybrid</div>'
+                f'<div class="qr-card hybrid{win}">'
+                f'<span class="qr-hero-pill">HERO</span>'
+                f'<div class="label">Travel time · Hybrid</div>'
                 f'<div class="value accent">{qml_travel:.1f}</div>'
-                f'<div class="sub">Bold green · local quantum-classical</div></div>',
+                f'<div class="sub">Cyan · local quantum-classical</div></div>',
                 unsafe_allow_html=True,
             )
         with t2:
@@ -1224,9 +1312,9 @@ def main():
                 else "—"
             )
             st.markdown(
-                f'<div class="qr-card"><div class="label">Travel time · Classical</div>'
-                f'<div class="value" style="color:#22d3ee">{c_val}</div>'
-                f'<div class="sub">Cyan · FiLM ablation</div></div>',
+                f'<div class="qr-card classical"><div class="label">Travel time · Classical</div>'
+                f'<div class="value gold">{c_val}</div>'
+                f'<div class="sub">Gold · FiLM ablation</div></div>',
                 unsafe_allow_html=True,
             )
         with t3:
@@ -1236,9 +1324,9 @@ def main():
                 else "—"
             )
             st.markdown(
-                f'<div class="qr-card"><div class="label">Travel time · Dijkstra</div>'
-                f'<div class="value" style="color:#e74c3c">{d_val}</div>'
-                f'<div class="sub">Dashed · full dynamic weights</div></div>',
+                f'<div class="qr-card dijkstra"><div class="label">Travel time · Dijkstra</div>'
+                f'<div class="value dij">{d_val}</div>'
+                f'<div class="sub">White dashed · full dynamic weights</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1250,7 +1338,7 @@ def main():
             st.markdown(
                 f'<div class="qr-card{" win" if reached else ""}">'
                 f'<div class="label">Exit reached</div>'
-                f'<div class="value" style="color:{"#2ecc71" if reached else "#ff6b1a"}">'
+                f'<div class="value" style="color:{"#00E5FF" if reached else "#FF8A4C"}">'
                 f"{yes_h}</div>"
                 f'<div class="sub">H {hops}h · C {yes_c}/{c_hops}h · D {yes_d}/{d_hops}h</div></div>',
                 unsafe_allow_html=True,
@@ -1356,19 +1444,19 @@ Calculate. Trained PHN reports ≈37.9%; a fresh demo init uses quantum_mix≈0.
         if is_hybrid:
             st.success(
                 "**Hybrid QML (HQNN)** delivers near-Dijkstra quality with "
-                "quantum-classical local inference — **bold green** vs **cyan** Classical "
-                "ablation vs **dashed** Dijkstra · Team 5 Quantrio."
+                "quantum-classical local inference — **cyan Hybrid** vs **gold Classical** "
+                "ablation vs **white dashed Dijkstra** · Team 5 Quantrio."
             )
 
         with st.expander("Legend & methodology"):
             st.markdown(
                 """
-                **Map legend (judge glance)**
-                - **Bold green** — **Hybrid QML / HQNN** (hero · PennyLane PHN)
-                - **Cyan** — Classical FiLM ablation (no quantum branch)
-                - **Dashed** — Dijkstra oracle (full dynamic weights)
+                **Map legend (Crisis Core)**
+                - **Cyan** — **Hybrid QML / HQNN** (hero · PennyLane PHN)
+                - **Gold** — Classical FiLM ablation (no quantum branch)
+                - **White dashed** — Dijkstra oracle (full dynamic weights)
                 - **Red rings** — expanding earthquake radius \(r_{epi}\)
-                - **Yellow rings** — exit congestion \(r_{exit}\)
+                - **Gold rings** — exit congestion \(r_{exit}\)
 
                 **Story** — Hybrid beats Classical; Hybrid approaches Dijkstra with
                 local Table I features only. Numbers are honest path sums under

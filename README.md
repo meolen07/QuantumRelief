@@ -221,9 +221,15 @@ QuantumRelief/
 
 ```bash
 source .venv/bin/activate
-python -u scripts/retrain_models.py 500 120 12 8 3500
-# args: episodes classical_epochs hybrid_A hybrid_B hybrid_max_samples
+# Hard dataset (recommended): 1000 episodes + Classical-failure oversample + strong hazards
+caffeinate -dimsu python -u scripts/retrain_models.py --hard
+# Dataset only:
+python -u -m src.dataset_generation --episodes 1000 --hard
+# Legacy positional: episodes classical_epochs hybrid_A hybrid_B hybrid_max_samples
+python -u scripts/retrain_models.py 1000 100 10 6 3500 --hard
 ```
+
+Hard mode widens earthquake/traffic radii (`hazard_intensity=2.0`) so Dijkstra labels reflect severe congestion, and oversamples start/epi/exit seeds from `data/hard_seeds.json` (synced from `demo_scenarios.json` / `find_advantage_scenarios.py`) 8× mixed with random episodes.
 
 **Smoke checks:**
 
