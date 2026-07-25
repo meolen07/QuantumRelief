@@ -2,7 +2,7 @@
 
 **Quantum Intelligence. Human Relief.**
 
-Team 5 — **Quantrio** · QC4SG SEA Quantathon
+Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://quantumrelief.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](runtime.txt)
@@ -266,7 +266,7 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 
 ## Team
 
-**Quantrio** (Team 5) · QC4SG — SEA Quantathon  
+**Quantrio** (Team 5) · QC4SG — SEA Quantathon 2026  
 Manila Intramuros emergency routing with Hybrid QML.
 
 ---

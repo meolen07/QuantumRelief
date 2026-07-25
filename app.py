@@ -634,7 +634,7 @@ def main():
     st.markdown(
         '<div class="qr-team">'
         '<span class="chip">Team 5 — Quantrio</span>'
-        '<span class="chip soft">QC4SG · SEA Quantathon</span>'
+        '<span class="chip soft">QC4SG · SEA Quantathon 2026</span>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1473,7 +1473,7 @@ Calculate. Trained PHN reports ≈37.9%; a fresh demo init uses quantum_mix≈0.
 
     st.markdown(
         '<div class="qr-footer">'
-        "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon</span>"
+        "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon 2026</span>"
         "<span>Quantum Intelligence. Human Relief.</span>"
         "</div>",
         unsafe_allow_html=True,
