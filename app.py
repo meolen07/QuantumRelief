@@ -1,8 +1,10 @@
 """
-QuantumRelief — B2G2C Escape-only Streamlit demo.
+QuantumRelief — Escape-only Streamlit flagship (Quantathon demo).
 
-Citizens (and gov-facing demos): set your location → random quake → auto-best exit
-→ Hybrid QML vs Classical vs Dijkstra. Folium 2D only. No God View surface.
+Product thesis: the map is always dynamic (traffic, closures, congestion).
+Earthquake Escape is the extreme stress case of that same engine — not the
+only job. UX: set location → random epicenter → auto-best exit → Hybrid QML
+vs Classical vs Dijkstra. Folium 2D only. No God View / address input.
 Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 """
 
@@ -618,12 +620,12 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Escape · Manila Intramuros · B2G2C</div>',
+        '<div class="qr-tagline">Escape flagship · Manila Intramuros · dynamic map</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Set your location. We pick the safest exit and route you out '
-        "with Hybrid QML — compared to Classical and Dijkstra.</div>",
+        '<div class="qr-tag">The map is always dynamic. Escape is the extreme case — '
+        "we pick the best exit and route you out with Hybrid QML vs Classical and Dijkstra.</div>",
         unsafe_allow_html=True,
     )
 
@@ -684,7 +686,8 @@ def main():
         st.markdown(
             f'<div class="qr-panel"><h3>Escape</h3>{badge}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0 0'>"
-            "For citizens and city demos: local Hybrid inference under a live quake. "
+            "Flagship stress test: expanding hazard rewrites edge costs — same idea as "
+            "everyday traffic and closures. Local Hybrid inference. "
             f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan</b> Hybrid · "
             f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold</b> Classical · "
             f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White</b> Dijkstra."
@@ -1032,7 +1035,7 @@ def main():
                 if 0 <= int(t_scrub) < len(radii_for_scrub):
                     r_now = float(radii_for_scrub[int(t_scrub)]["r_epi"])
                 st.caption(
-                    f"Epicenter radius grows with t · "
+                    f"Dynamic edge costs · epicenter radius grows with t · "
                     f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km**"
                 )
             else:
@@ -1169,12 +1172,15 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                     """
                 )
         else:
-            st.info("Set location · random epicenter · **Find route**.")
+            st.info(
+                "Set location · random epicenter · **Find route** — "
+                "dynamic edge costs, Escape as extreme case."
+            )
 
         st.markdown(
             '<div class="qr-footer">'
             "Team 5 — Quantrio · QC4SG SEA Quantathon 2026<br/>"
-            "B2G2C Escape · Folium 2D · Quantum Intelligence. Human Relief."
+            "Escape flagship · dynamic map · Quantum Intelligence. Human Relief."
             "</div>",
             unsafe_allow_html=True,
         )
