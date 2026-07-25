@@ -71,9 +71,9 @@
       "classical": 49.2860007081326
     },
     "mean_safety_score": {
-      "hybrid": 0.8924099235587805,
-      "classical": 0.8707857728955675,
-      "dijkstra": 0.9410612017985998
+      "hybrid": 0.4935586963363612,
+      "classical": 0.4498209593839797,
+      "dijkstra": 0.5574564923092731
     },
     "mean_epi_km": {
       "hybrid": 1.0157175116991732,
@@ -85,7 +85,7 @@
       "classical": 0.5074760928554206,
       "dijkstra": 0.6007422155786417
     },
-    "safety_formula": "safety_score = mean_epi_km \u2212 0.35 \u00b7 mean(log1p(w_edge)); higher = farther from epicenter / lower Algorithm-1 hazard inflation",
+    "safety_formula": "safety_score = min_epi_km \u2212 0.15 \u00b7 mean(log1p(w_edge)); higher = farther closest approach to epicenter / lower hazard",
     "hard_only": {
       "n": 14,
       "mean_time": {
@@ -98,8 +98,8 @@
         "classical": 32.91967240616755
       },
       "mean_safety_score": {
-        "hybrid": 0.8594373244247774,
-        "classical": 0.8115081781538193
+        "hybrid": 0.46974341259513486,
+        "classical": 0.3758751041659912
       },
       "hybrid_travel_win_pct": 85.71428571428571
     },
@@ -107,31 +107,31 @@
     "hybrid_near_dijkstra_pct": 78.57142857142857,
     "hybrid_travel_win_pct": 78.57142857142857,
     "hybrid_overlap_win_pct": 60.714285714285715,
-    "hybrid_safety_win_pct": 35.714285714285715,
+    "hybrid_safety_win_pct": 53.57142857142857,
     "quantum_contrib_pct": 77.56603788934294,
     "delta_mean_travel_pct_vs_classical": -5.227315413986929,
-    "delta_mean_safety_vs_classical": 0.021624150663212993,
+    "delta_mean_safety_vs_classical": 0.04373773695238148,
     "sample_trials": [
       {
         "hybrid_time": 9.463551253549044,
         "classical_time": 10.174442568784073,
         "dijkstra_time": 9.325425917881624,
-        "hybrid_safety": 1.2065937377912002,
-        "classical_safety": 1.2864750192504786
+        "hybrid_safety": 0.49583869274777026,
+        "classical_safety": 0.4887795890277108
       },
       {
         "hybrid_time": 20.900369490814008,
         "classical_time": 24.895638773983343,
         "dijkstra_time": 14.601679474010485,
-        "hybrid_safety": 0.7367342538643995,
-        "classical_safety": 0.5173471962487972
+        "hybrid_safety": 0.1762370178028318,
+        "classical_safety": 0.13310055309878255
       },
       {
         "hybrid_time": 14.94089859517075,
         "classical_time": 15.476731825275785,
         "dijkstra_time": 16.27037061500128,
-        "hybrid_safety": 0.3428545661128075,
-        "classical_safety": 0.25286122127427324
+        "hybrid_safety": 0.06509611583381482,
+        "classical_safety": 0.05078582051679724
       }
     ]
   },
@@ -149,10 +149,10 @@
     "hybrid_overlap_ge_classical": true,
     "hybrid_travel_win_pct": 78.57142857142857,
     "hybrid_near_dijkstra_pct": 78.57142857142857,
-    "hybrid_safety_win_pct": 35.714285714285715,
+    "hybrid_safety_win_pct": 53.57142857142857,
     "exit_hybrid_pct": 100.0,
     "delta_mean_travel_vs_classical": -0.7527041246987878,
-    "delta_mean_safety_vs_classical": 0.021624150663212993,
+    "delta_mean_safety_vs_classical": 0.04373773695238148,
     "promote_ok": true
   }
 }
