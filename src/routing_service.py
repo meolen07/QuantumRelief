@@ -699,12 +699,14 @@ def compare_three_way(
         "env": h_env,
     }
 
-    # Narrative helpers (honest ratios — no forged numbers)
+    # Narrative helpers (honest ratios — no forged numbers).
+    # "beats" = strictly lower travel; "ties" = within 2% (parity, not a win).
     narrative = {
         "tagline": (
             "Hybrid delivers near-Dijkstra quality with quantum-classical local inference"
         ),
         "hybrid_beats_classical": None,
+        "hybrid_ties_classical": None,
         "hybrid_near_dijkstra": None,
         "hybrid_vs_classical_time_ratio": None,
         "hybrid_vs_dijkstra_time_ratio": None,
@@ -715,15 +717,11 @@ def compare_three_way(
         ht = hybrid_summary["travel_time"]
         if ct > 1e-6:
             narrative["hybrid_vs_classical_time_ratio"] = float(ht / ct)
-            narrative["hybrid_beats_classical"] = bool(
-                ht <= ct * 1.02
-                or (
-                    h_overlap is not None
-                    and c_overlap is not None
-                    and h_overlap >= c_overlap
-                    and ht <= ct * 1.08
-                )
-            )
+            # Strict travel win only — ties/near-parity are not "beats".
+            beats = bool(ht < ct)
+            ties = bool(not beats and ht <= ct * 1.02)
+            narrative["hybrid_beats_classical"] = beats
+            narrative["hybrid_ties_classical"] = ties
         narrative["paths_diverge"] = bool(
             list(h_path) != list(classical_summary["path"])
         )
