@@ -34,6 +34,7 @@ from src.routing_service import compare_three_way
 from src.utils import DATA_DIR, ensure_dirs, node_xy
 
 OUT_PATH = DATA_DIR / "demo_scenarios.json"
+HARD_SEEDS_PATH = DATA_DIR / "hard_seeds.json"
 
 
 def _haversine_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -292,9 +293,30 @@ def search_advantage_scenarios(
     }
 
     OUT_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Compact seed list for hard dataset oversampling (start / epi / exit)
+    hard_seeds = {
+        "source": str(OUT_PATH),
+        "n_seeds": len(scenarios),
+        "generated_at": payload["generated_at"],
+        "note": (
+            "Classical-failure start/epi/exit seeds for hard dataset oversampling."
+        ),
+        "seeds": [
+            {
+                "id": s["id"],
+                "start_node": s["start_node"],
+                "dest_node": s["dest_node"],
+                "epi_lat": s["epi_lat"],
+                "epi_lon": s["epi_lon"],
+                "metrics": s.get("metrics"),
+            }
+            for s in scenarios
+        ],
+    }
+    HARD_SEEDS_PATH.write_text(json.dumps(hard_seeds, indent=2), encoding="utf-8")
     print(
         f"[find_advantage] {len(hits)} hits → top {len(scenarios)} saved to {OUT_PATH} "
-        f"({payload['elapsed_sec']}s)"
+        f"+ {HARD_SEEDS_PATH} ({payload['elapsed_sec']}s)"
     )
     return payload
 
