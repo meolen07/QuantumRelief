@@ -1,13 +1,12 @@
 """
-QuantumRelief — Live Escape Streamlit prototype (Quantathon demo).
+QuantumRelief — Live Escape product surface (Streamlit).
 
-Product thesis: Hybrid QML optimal routing when the map is always dynamic
-(traffic, closures, broken streets). Earthquake is the extreme stress demo,
-not the only story.
+Production app + MockTrafficProvider: open on current simulated city
+conditions, set location, pick destination / best exit, compare
+Hybrid vs Classical vs Dijkstra (travel + safety).
 
-UX flow: Run judge demo (or set location → Flooded corridor / Congestion /
-Closed corridor → Find route) → Hybrid vs Classical vs Dijkstra.
-Folium 2D only. No God View / address input.
+Earthquake is an optional extreme hazard layer. Quantathon “Run judge demo”
+stays secondary (collapsed). Folium 2D only. No God View / address input.
 Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 """
 
@@ -65,6 +64,7 @@ from src.routing_service import (
 )
 from src.traffic_provider import (
     TrafficNotConfiguredError,
+    active_feed_disruptions,
     get_traffic_provider,
     traffic_mode_badge,
 )
@@ -256,10 +256,22 @@ st.markdown(
       display: inline-block; width: 0.7rem; height: 0.7rem;
       border-radius: 2px; margin-right: 0.28rem; vertical-align: -1px;
     }
-    .qr-footer {
-      margin-top: 0.75rem; padding-top: 0.65rem;
-      border-top: 1px solid rgba(154,168,188,0.12);
-      color: var(--qr-mist); font-size: 0.75rem;
+    .qr-incident {
+      background: rgba(10,15,30,0.55);
+      border-left: 3px solid var(--qr-gold);
+      border-radius: 0 8px 8px 0;
+      padding: 0.4rem 0.6rem;
+      margin: 0.28rem 0;
+      font-size: 0.78rem;
+      color: var(--qr-mist);
+    }
+    .qr-incident strong { color: #fff; }
+    .qr-incident .sev {
+      color: var(--qr-gold); font-size: 0.7rem; letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .qr-asof {
+      font-size: 0.72rem; color: var(--qr-mist); margin: 0.2rem 0 0.35rem 0;
     }
     div[data-testid="stMetricValue"] { color: #f4f7fb; }
     button[kind="primary"] {
@@ -550,6 +562,85 @@ def dijkstra_route(G, start, dest, epicenter_lonlat, max_steps=120):
     return path, travel
 
 
+def _apply_feed_snapshot(snap) -> int:
+    """Store feed snapshot + serializable disruptions in session state."""
+    if snap is None:
+        return 0
+    st.session_state["feed_snapshot"] = snap.to_dict()
+    disruptions = snap.edge_disruptions
+    st.session_state["edge_disruptions"] = disruptions
+    st.session_state.pop("_nudge_disruption", None)
+    edges = disruptions.get("edges") if isinstance(disruptions, dict) else None
+    return len(edges) if edges else 0
+
+
+def _load_current_conditions(G, *, refresh: bool = False) -> str:
+    """
+    Load (or refresh) mock city conditions into the session.
+
+    Product open path: current feed on start — not button spam.
+    """
+    near = st.session_state.get("start_node")
+    try:
+        disruptions, snap = active_feed_disruptions(
+            G, near_node=near, refresh=bool(refresh)
+        )
+    except TrafficNotConfiguredError as exc:
+        _handle_traffic_error(exc)
+        return str(exc)
+    if snap is None:
+        st.session_state["edge_disruptions"] = disruptions
+        st.session_state["feed_snapshot"] = None
+        msg = "Traffic feed returned no city conditions."
+        st.session_state["map_status"] = msg
+        return msg
+    n = _apply_feed_snapshot(snap)
+    name = getattr(snap, "scenario_name", None) or snap.to_dict().get("scenario_name")
+    as_of = getattr(snap, "as_of", "") or ""
+    verb = "Refreshed" if refresh else "Loaded"
+    msg = (
+        f"{verb} city conditions · {name} · {n} disrupted edges"
+        + (f" · as of {as_of}" if as_of else "")
+    )
+    st.session_state["map_status"] = msg
+    _clear_route_results()
+    return msg
+
+
+def _feed_incidents_html() -> str:
+    """Render Conditions now incident list from session feed snapshot."""
+    snap = st.session_state.get("feed_snapshot") or {}
+    incidents = snap.get("incidents") or []
+    as_of = snap.get("as_of") or "—"
+    name = snap.get("scenario_name") or "City conditions"
+    city = snap.get("city") or "Manila · Intramuros"
+    if not incidents:
+        return (
+            f'<div class="qr-asof"><strong style="color:#fff">{city}</strong> · '
+            f"{name}<br/>Last updated · {as_of}</div>"
+            '<div class="qr-incident">No active incidents on the simulated feed.</div>'
+        )
+    rows = [
+        f'<div class="qr-asof"><strong style="color:#fff">{city}</strong> · '
+        f"{name}<br/>Last updated · {as_of}</div>"
+    ]
+    for inc in incidents:
+        kind = str(inc.get("kind") or "incident")
+        label = str(inc.get("label") or kind)
+        area = str(inc.get("area_hint") or "")
+        sev = float(inc.get("severity") or 0)
+        n_e = int(inc.get("edge_count") or len(inc.get("edges") or []))
+        rows.append(
+            f'<div class="qr-incident">'
+            f'<span class="sev">{kind.replace("_", " ")} · sev {sev:.0%}</span><br/>'
+            f"<strong>{label}</strong>"
+            + (f" · {area}" if area else "")
+            + f"<br/>{n_e} edges · soft ×{float(inc.get('multiplier') or 0):.0f}"
+            f"</div>"
+        )
+    return "".join(rows)
+
+
 def _clear_route_results():
     for k in (
         "path",
@@ -610,6 +701,13 @@ def _active_disruption_count() -> int:
 
 def _disruption_summary() -> str:
     """Human label for the active soft disruption (or None)."""
+    snap = st.session_state.get("feed_snapshot")
+    if isinstance(snap, dict) and snap.get("scenario_name"):
+        n = _active_disruption_count()
+        return (
+            f"{snap['scenario_name']} · {n} disrupted edges · "
+            f"feed {snap.get('feed', 'simulated')}"
+        )
     raw = st.session_state.get("edge_disruptions")
     if not isinstance(raw, dict) or not raw.get("edges"):
         return "None — map edges at nominal + hazard weights only"
@@ -642,6 +740,30 @@ def _set_random_disruption(G, *, soft_block: bool = False) -> int:
         seed=seed,
     )
     st.session_state["edge_disruptions"] = dset.to_serializable()
+    st.session_state["feed_snapshot"] = {
+        "city": "Manila · Intramuros",
+        "as_of": "manual overlay",
+        "scenario_id": "manual",
+        "scenario_name": "Closed corridor" if soft_block else "Congestion",
+        "blurb": "Manual product overlay",
+        "feed": "simulated",
+        "incidents": [
+            {
+                "id": "manual:0",
+                "kind": "soft_block" if soft_block else "congestion",
+                "label": (
+                    "Closed corridor · historic core"
+                    if soft_block
+                    else "Congestion on arterial"
+                ),
+                "severity": 0.7 if soft_block else 0.55,
+                "area_hint": "Manual",
+                "edge_count": len(dset.normalized_edges()),
+                "edges": [[u, v] for u, v in dset.normalized_edges()],
+                "multiplier": float(dset.multiplier),
+            }
+        ],
+    }
     st.session_state.pop("_nudge_disruption", None)
     _clear_route_results()
     return len(dset.normalized_edges())
@@ -668,6 +790,26 @@ def _set_flood_corridor(
         seed=int(seed),
     )
     st.session_state["edge_disruptions"] = dset.to_serializable()
+    st.session_state["feed_snapshot"] = {
+        "city": "Manila · Intramuros",
+        "as_of": "manual overlay",
+        "scenario_id": "manual_flood",
+        "scenario_name": "Flooded corridor",
+        "blurb": "Manual flood overlay",
+        "feed": "simulated",
+        "incidents": [
+            {
+                "id": "manual_flood:0",
+                "kind": "flood",
+                "label": "Flooded corridor near Pasig",
+                "severity": 0.9,
+                "area_hint": "Pasig-side low ground",
+                "edge_count": len(dset.normalized_edges()),
+                "edges": [[u, v] for u, v in dset.normalized_edges()],
+                "multiplier": float(dset.multiplier),
+            }
+        ],
+    }
     st.session_state.pop("_nudge_disruption", None)
     _clear_route_results()
     return len(dset.normalized_edges())
@@ -675,11 +817,12 @@ def _set_flood_corridor(
 
 def _clear_disruption() -> None:
     st.session_state.pop("edge_disruptions", None)
+    st.session_state.pop("feed_snapshot", None)
     _clear_route_results()
 
 
 def _traffic_feed_badge_html() -> str:
-    """Production-shaped feed badge: Demo · mock traffic vs Live · traffic API."""
+    """Honest product badge: Live conditions · simulated feed (or live API)."""
     info = get_traffic_provider().mode_info()
     cls = "qr-badge feed live" if info.mode == "live" else "qr-badge feed"
     return f'<span class="{cls}">{info.badge}</span>'
@@ -720,11 +863,10 @@ def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
 
 def _run_judge_demo(G, exits) -> str:
     """
-    One-click 60s path: curated start (+ mild epi) + Flooded corridor + auto-route.
+    Quantathon secondary path: curated start + judge_flood feed + auto-route.
 
-    Story: map changed (amber flood) → Hybrid finds a better route than
-    Classical when the advantage scenario holds under the live disruption.
-    Uses the active TrafficProvider (default: MockTrafficProvider).
+    Uses MockTrafficFeed scenario ``judge_flood`` when available, else pinned
+    flood corridor seeds.
     """
     st.session_state.pop("_nudge_disruption", None)
     try:
@@ -732,13 +874,23 @@ def _run_judge_demo(G, exits) -> str:
         if sc is not None:
             _apply_advantage_scenario(G, exits, sc)
             near = st.session_state.get("start_node")
-            flood_params = _judge_flood_params(sc)
-            n = _set_flood_corridor(
-                G,
-                near_node=near,
-                seed=flood_params["seed"],
-                corridor_extra=flood_params["corridor_extra"],
-            )
+            # Prefer catalog judge_flood snapshot (honest product feed path).
+            try:
+                from src.mock_traffic_feed import get_mock_traffic_feed
+
+                feed = get_mock_traffic_feed()
+                feed.force_scenario("judge_flood")
+                snap = feed.current(G, near_node=near)
+                n = _apply_feed_snapshot(snap)
+                feed.clear_force()
+            except Exception:
+                flood_params = _judge_flood_params(sc)
+                n = _set_flood_corridor(
+                    G,
+                    near_node=near,
+                    seed=flood_params["seed"],
+                    corridor_extra=flood_params["corridor_extra"],
+                )
             # Restore curated exit after disruption refresh of ranking.
             dest = sc.get("dest_node")
             if dest is not None and dest in exits:
@@ -766,7 +918,6 @@ def _run_judge_demo(G, exits) -> str:
                 "Finding safest & fastest route…"
             )
         else:
-            # Fallback: disruption-heavy Ondoy-like setup without curated coords.
             n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
             _refresh_exit_ranking(G, exits)
             msg = (
@@ -811,6 +962,7 @@ def _init_session(G, exits, nodes, origin):
     if "dest_node" not in st.session_state:
         st.session_state["dest_node"] = exits[0]
     if "epi_lat" not in st.session_state:
+        # Mild default epi far enough that everyday routing is feed-led.
         st.session_state["epi_lat"] = float(np.mean(ys)) - 0.0015
         st.session_state["epi_lon"] = float(np.mean(xs)) + 0.0012
     if "map_center" not in st.session_state:
@@ -822,10 +974,12 @@ def _init_session(G, exits, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = (
-            "Click the map to set your location, then change the live map."
+            "Click the map to set your location, then find a route under live conditions."
         )
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
+    if "feed_snapshot" not in st.session_state:
+        st.session_state["feed_snapshot"] = None
     if "exit_ranking" not in st.session_state:
         _refresh_exit_ranking(G, exits)
 
@@ -857,13 +1011,13 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Live Escape · your trip under a changing map</div>',
+        '<div class="qr-tagline">Route under live city conditions</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Traffic, closures, and congestion rewrite edge costs every hour. '
-        "Earthquake is the optional extreme stress demo — Hybrid QML finds the safest &amp; "
-        "fastest route vs Classical and Dijkstra.</div>",
+        '<div class="qr-tag">See current road conditions, set your trip, compare Hybrid · Classical · '
+        "Dijkstra on travel and safety. Simulated feed today — same app with a live provider in production."
+        "</div>",
         unsafe_allow_html=True,
     )
     if feed_info.mode == "live" and not feed_info.live_ready:
@@ -883,11 +1037,11 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, exits, nodes, origin)
 
-    # First paint: one coherent story — curated corridor + Flooded corridor +
-    # auto Find route (same path as "Run judge demo"). No quake-only autoload.
-    if not st.session_state.get("_advantage_autoload_done"):
-        st.session_state["_advantage_autoload_done"] = True
-        _run_judge_demo(G, exits)
+    # Product open: load current mock city conditions automatically (not judge spam).
+    if not st.session_state.get("_feed_autoload_done"):
+        st.session_state["_feed_autoload_done"] = True
+        _load_current_conditions(G, refresh=False)
+        _refresh_exit_ranking(G, exits)
     elif st.session_state.pop("_schedule_auto_run", False):
         st.session_state["_auto_run_route"] = True
 
@@ -911,7 +1065,7 @@ def main():
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
     # ------------------------------------------------------------------
-    # RIGHT PANEL (~1/3) — minimal controls + metrics
+    # RIGHT PANEL (~1/3) — product sections
     # ------------------------------------------------------------------
     with panel_col:
         badge = (
@@ -920,165 +1074,173 @@ def main():
             else '<span class="qr-badge warn">PennyLane unavailable · Classical only</span>'
         )
         st.markdown(
-            f'<div class="qr-panel"><h3>Live Escape</h3>{badge} {_traffic_feed_badge_html()}'
+            f'<div class="qr-panel"><h3>QuantumRelief</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
-            "The map is always dynamic. One story for judges: "
-            "<b style='color:#E8EEF6'>map changed → Hybrid finds a better route</b>."
+            "City ops / fleet routing under changing edge costs — "
+            "<b style='color:#E8EEF6'>conditions → trip → route compare</b>."
             "</p>"
             '<div class="qr-legend">'
             f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid</span>'
             f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Classical</span>'
             f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>Dijkstra</span>'
-            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Flood / disruption</span>'
+            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Feed disruption</span>'
             f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Hazard (optional)</span>'
             "</div></div>",
             unsafe_allow_html=True,
         )
 
-        # ---- 60s path + one-click judge demo ----
+        # ---- Conditions now ----
         st.markdown(
-            '<div class="qr-panel"><h3>'
-            '<span class="qr-step">0</span>60-second path</h3></div>',
+            '<div class="qr-panel"><h3>Conditions now</h3></div>',
             unsafe_allow_html=True,
         )
-        st.markdown(
-            '<div class="qr-ro" style="line-height:1.45">'
-            "<strong>1</strong> · Location set (click map or judge demo)<br/>"
-            "<strong>2</strong> · Map changed — Flooded / Congestion / Closed<br/>"
-            "<strong>3</strong> · Find route — cyan Hybrid · gold Classical · white Dijkstra<br/>"
-            "<strong>4</strong> · Read travel + safety — HERO only when Hybrid wins"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        if st.button(
-            "Run judge demo",
-            type="primary",
-            use_container_width=True,
-            key="btn_judge_demo",
-            help=(
-                "Load curated corridor + Flooded corridor (Ondoy-like soft costs) "
-                "+ mild epicenter, then auto Find route"
-            ),
-        ):
-            _run_judge_demo(G, exits)
-            st.rerun()
-        st.caption(
-            "One click: curated start · Flooded corridor · mild epi · auto route. "
-            "Same story as first load."
-        )
-
-        # ---- 1. Location ----
-        st.markdown(
-            '<div class="qr-panel"><h3>'
-            '<span class="qr-step">1</span>Your location</h3></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="qr-ro"><strong>Snapped</strong><br/>'
-            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption("Click the map to set your trip start — or use Run judge demo.")
-
-        # ---- 2. Change the map ----
-        st.markdown(
-            '<div class="qr-panel"><h3>'
-            '<span class="qr-step">2</span>Change the map</h3></div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Amber dashed = soft live edge costs · feed: {traffic_mode_badge()}."
-        )
-
-        n_disrupted = _active_disruption_count()
-        st.markdown(
-            f'<div class="qr-ro"><strong>Road disruptions</strong><br/>'
-            f"{_disruption_summary()}</div>",
-            unsafe_allow_html=True,
-        )
-
-        dcol_a, dcol_b = st.columns(2)
-        with dcol_a:
+        st.markdown(_feed_incidents_html(), unsafe_allow_html=True)
+        st.caption(_disruption_summary())
+        c_a, c_b = st.columns(2)
+        with c_a:
             if st.button(
-                "Congestion",
+                "Refresh feed",
                 use_container_width=True,
                 type="secondary",
-                key="btn_congestion",
-                help="Soft ×5 weight on a short corridor (amber dashed)",
+                key="btn_refresh_feed",
+                help="Rotate to the next simulated city scenario",
             ):
-                try:
-                    n = _set_random_disruption(G, soft_block=False)
-                    _refresh_exit_ranking(G, exits)
-                    st.session_state["map_status"] = (
-                        f"Congestion → {n} edges · amber soft weight ×5"
-                    )
-                except TrafficNotConfiguredError as exc:
-                    _handle_traffic_error(exc)
-                st.rerun()
-        with dcol_b:
-            if st.button(
-                "Closed corridor",
-                use_container_width=True,
-                type="secondary",
-                key="btn_soft_block",
-                help="Soft ×8 closed corridor (still passable — not a hard delete)",
-            ):
-                try:
-                    n = _set_random_disruption(G, soft_block=True)
-                    _refresh_exit_ranking(G, exits)
-                    st.session_state["map_status"] = (
-                        f"Closed corridor (soft) → {n} edges · amber soft weight ×8"
-                    )
-                except TrafficNotConfiguredError as exc:
-                    _handle_traffic_error(exc)
-                st.rerun()
-        if st.button(
-            "Flooded corridor",
-            use_container_width=True,
-            type="secondary",
-            key="btn_flood",
-            help=(
-                "Ondoy-like soft flood · ×12 on a coherent low-lying "
-                "corridor near your start"
-            ),
-        ):
-            try:
-                n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
+                _load_current_conditions(G, refresh=True)
                 _refresh_exit_ranking(G, exits)
-                st.session_state["map_status"] = (
-                    f"Flooded corridor → {n} edges · amber soft weight ×12 "
-                    "(Ondoy-like)"
-                )
-            except TrafficNotConfiguredError as exc:
-                _handle_traffic_error(exc)
-            st.rerun()
-        if st.button(
-            "Clear disruptions",
-            use_container_width=True,
-            type="secondary",
-            key="btn_clear_disruption",
-            disabled=n_disrupted == 0,
-        ):
-            _clear_disruption()
-            _refresh_exit_ranking(G, exits)
-            st.session_state["map_status"] = "Road disruptions cleared"
-            st.rerun()
+                st.rerun()
+        with c_b:
+            if st.button(
+                "Clear overlay",
+                use_container_width=True,
+                type="secondary",
+                key="btn_clear_disruption",
+                disabled=_active_disruption_count() == 0,
+            ):
+                _clear_disruption()
+                _refresh_exit_ranking(G, exits)
+                st.session_state["map_status"] = "Road disruptions cleared"
+                st.rerun()
+
+        with st.expander("Manual overlays (congestion / flood)", expanded=False):
+            st.caption(
+                f"Amber dashed = soft live edge costs · feed: {traffic_mode_badge()}."
+            )
+            dcol_a, dcol_b = st.columns(2)
+            with dcol_a:
+                if st.button(
+                    "Congestion",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_congestion",
+                ):
+                    try:
+                        n = _set_random_disruption(G, soft_block=False)
+                        _refresh_exit_ranking(G, exits)
+                        st.session_state["map_status"] = (
+                            f"Congestion → {n} edges · amber soft weight ×5"
+                        )
+                    except TrafficNotConfiguredError as exc:
+                        _handle_traffic_error(exc)
+                    st.rerun()
+            with dcol_b:
+                if st.button(
+                    "Closed corridor",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_soft_block",
+                ):
+                    try:
+                        n = _set_random_disruption(G, soft_block=True)
+                        _refresh_exit_ranking(G, exits)
+                        st.session_state["map_status"] = (
+                            f"Closed corridor (soft) → {n} edges · amber soft weight ×8"
+                        )
+                    except TrafficNotConfiguredError as exc:
+                        _handle_traffic_error(exc)
+                    st.rerun()
+            if st.button(
+                "Flooded corridor",
+                use_container_width=True,
+                type="secondary",
+                key="btn_flood",
+            ):
+                try:
+                    n = _set_flood_corridor(
+                        G, near_node=st.session_state.get("start_node")
+                    )
+                    _refresh_exit_ranking(G, exits)
+                    st.session_state["map_status"] = (
+                        f"Flooded corridor → {n} edges · amber soft weight ×12"
+                    )
+                except TrafficNotConfiguredError as exc:
+                    _handle_traffic_error(exc)
+                st.rerun()
+
+        # ---- Your trip ----
+        st.markdown(
+            '<div class="qr-panel"><h3>Your trip</h3></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="qr-ro"><strong>Start</strong><br/>'
+            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
+            f'<br/><span style="font-size:0.75rem">Click the map to set location</span></div>',
+            unsafe_allow_html=True,
+        )
 
         ranking = st.session_state.get("exit_ranking") or []
+        exit_labels = {}
+        for i, ex in enumerate(exits):
+            row = next((r for r in ranking if r.get("exit_node") == ex), None)
+            if row:
+                exit_labels[ex] = (
+                    f'{row.get("label", f"Exit {i+1}")} · score '
+                    f'{row.get("combined_score", 0):.0f}/100'
+                )
+            else:
+                exit_labels[ex] = f"Exit {i + 1} · node {ex}"
+
+        dest_choice = st.selectbox(
+            "Destination",
+            options=list(exits),
+            index=list(exits).index(st.session_state["dest_node"])
+            if st.session_state["dest_node"] in exits
+            else 0,
+            format_func=lambda n: exit_labels.get(n, str(n)),
+            help="Best exit is pre-selected from ranking under active feed disruptions",
+        )
+        if dest_choice != st.session_state.get("dest_node"):
+            st.session_state["dest_node"] = dest_choice
+            _clear_route_results()
+        else:
+            st.session_state["dest_node"] = dest_choice
+
         if ranking:
             best = ranking[0]
             t_txt = (
                 f'{best["travel_time"]:.1f}'
-                if best.get("exit_reached") and np.isfinite(best.get("travel_time", np.nan))
+                if best.get("exit_reached")
+                and np.isfinite(best.get("travel_time", np.nan))
                 else "—"
             )
             st.markdown(
-                f'<div class="qr-rec"><strong>Best exit · {best["label"]}</strong>'
+                f'<div class="qr-rec"><strong>Recommended · {best["label"]}</strong>'
                 f' · score {best["combined_score"]:.0f}/100 · est. {t_txt}'
                 f'<br/><span style="font-size:0.78rem">{best.get("why", "")}</span></div>',
                 unsafe_allow_html=True,
             )
+            if st.button(
+                "Use recommended exit",
+                use_container_width=True,
+                type="secondary",
+                key="btn_use_best_exit",
+            ):
+                st.session_state["dest_node"] = best.get(
+                    "exit_node", st.session_state["dest_node"]
+                )
+                st.session_state["recommended_exit"] = st.session_state["dest_node"]
+                _clear_route_results()
+                st.rerun()
 
         with st.expander("Optional extreme hazard (earthquake)", expanded=False):
             st.markdown(
@@ -1102,21 +1264,32 @@ def main():
                 )
                 st.rerun()
             st.caption(
-                "Earthquake is the Quantathon stress case of the same live-map engine. "
-                "Judge demo already sets a mild epicenter."
+                "Extreme hazard layer — not required for everyday feed routing."
             )
+
+        with st.expander("Quantathon · Run judge demo", expanded=False):
+            st.caption(
+                "Secondary 60s path: curated corridor + pinned flood + auto Find route."
+            )
+            if st.button(
+                "Run judge demo",
+                type="secondary",
+                use_container_width=True,
+                key="btn_judge_demo",
+            ):
+                _run_judge_demo(G, exits)
+                st.rerun()
 
         if not pl_ok:
             st.caption(qstat["note"])
 
-        # ---- 3. Find route ----
+        # ---- Route ----
         st.markdown(
-            '<div class="qr-panel"><h3>'
-            '<span class="qr-step">3</span>Find route</h3></div>',
+            '<div class="qr-panel"><h3>Route</h3></div>',
             unsafe_allow_html=True,
         )
         run = st.button(
-            "Find safest & fastest route",
+            "Find route · compare engines",
             type="primary",
             use_container_width=True,
             key="btn_find_route",
@@ -1556,14 +1729,14 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
         else:
             st.info(
-                "**Run judge demo** for the 60s path — or ① click map · "
-                "② Flooded / Congestion / Closed · ③ **Find safest & fastest route**."
+                "① Check **Conditions now** · ② click the map for your start · "
+                "③ pick destination · ④ **Find route · compare engines**."
             )
 
         st.markdown(
             '<div class="qr-footer">'
             "Team 5 — Quantrio · QC4SG SEA Quantathon 2026<br/>"
-            "Live Escape · dynamic map first · Quantum Intelligence. Human Relief."
+            "QuantumRelief · simulated city feed · Quantum Intelligence. Human Relief."
             "</div>",
             unsafe_allow_html=True,
         )
