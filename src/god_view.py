@@ -43,6 +43,11 @@ FLOOD_BASE_MULT = 1.0
 # Pitch narrative only: default batch of 10 → ~14k "citizens under command"
 CITY_SCALE_PER_AGENT = 1_428
 
+# Map corridor colors — must stay visually distinct for judges
+HYBRID_ROUTE_COLOR = "#00FF66"  # bright lime hero corridors
+DIJKSTRA_ROUTE_COLOR = "#00E5FF"  # clear cyan bulk / alternatives
+HAZARD_ROUTE_COLOR = "#FF4D2E"  # red-orange blocked / danger
+
 
 def _no_click(layer):
     """Keep Folium overlays from stealing map interactions."""
@@ -214,6 +219,7 @@ def run_evacuation_batch(
     candidates = [n for n in G.nodes() if n not in exits]
     empty = {
         "paths": [],
+        "hybrid_paths": [],
         "edge_counts": Counter(),
         "quantum_edges": set(),
         "n_routed": 0,
@@ -240,6 +246,7 @@ def run_evacuation_batch(
     hybrid_starts = set(starts[:n_hybrid])
 
     paths: List[List[Any]] = []
+    hybrid_paths: List[List[Any]] = []
     travels: List[float] = []
     n_success = 0
     n_hybrid_ok = 0
@@ -307,6 +314,7 @@ def run_evacuation_batch(
         _accumulate_edges(edge_counts, path)
         if engine == "hybrid":
             n_hybrid_ok += 1
+            hybrid_paths.append(path)
             for u, v in zip(path[:-1], path[1:]):
                 quantum_edges.add(tuple(sorted((u, v))))
         else:
@@ -322,6 +330,7 @@ def run_evacuation_batch(
 
     return {
         "paths": paths,
+        "hybrid_paths": hybrid_paths,
         "edge_counts": edge_counts,
         "quantum_edges": quantum_edges,
         "n_routed": n_routed,
@@ -343,17 +352,35 @@ def _corridor_color(
     *,
     is_quantum: bool = False,
 ) -> str:
-    """Green = Hybrid hero sample; cyan = Dijkstra bulk alternatives."""
+    """Lime Hybrid heroes vs cyan Dijkstra bulk — never the same teal."""
     if is_quantum:
-        return "#2ecc71"
+        return HYBRID_ROUTE_COLOR
+    # Stay in the cyan family only (no teal/green mix that confuses judges)
     if max_count <= 0:
-        return "#22d3ee"
+        return DIJKSTRA_ROUTE_COLOR
     frac = count / max_count
     if frac >= 0.45:
-        return "#22d3ee"
+        return DIJKSTRA_ROUTE_COLOR
     if frac >= 0.22:
-        return "#1aa6c4"
-    return "#3d7ea6"
+        return "#00C4E0"
+    return "#00A8C8"
+
+
+def _path_latlons(G: nx.Graph, path: Sequence) -> List[List[float]]:
+    """Convert a node path to Folium [[lat, lon], ...] coords."""
+    coords: List[List[float]] = []
+    for n in path:
+        if n not in G.nodes:
+            continue
+        coords.append([float(G.nodes[n]["y"]), float(G.nodes[n]["x"])])
+    return coords
+
+
+def _is_quantum_edge(
+    u: Any, v: Any, quantum_edges: Set[Tuple[Any, Any]]
+) -> bool:
+    key = tuple(sorted((u, v)))
+    return key in quantum_edges or (u, v) in quantum_edges or (v, u) in quantum_edges
 
 
 def build_god_view_map(
@@ -363,6 +390,7 @@ def build_god_view_map(
     edge_counts: Counter,
     *,
     quantum_edges: Optional[Set[Tuple[Any, Any]]] = None,
+    hybrid_paths: Optional[Sequence[Sequence]] = None,
     bridge_edge: Optional[Tuple[Any, Any]] = None,
     flood_level: float = 0.0,
     map_center: Optional[List[float]] = None,
@@ -381,6 +409,7 @@ def build_god_view_map(
         tiles="CartoDB dark_matter",
     )
     quantum_edges = quantum_edges or set()
+    hybrid_paths = list(hybrid_paths or [])
     max_count = max(edge_counts.values()) if edge_counts else 0
 
     # Base roads (dim)
@@ -412,38 +441,65 @@ def build_god_view_map(
         )
         _no_click(flood).add_to(m)
 
-    # Corridors: draw Dijkstra (cyan) first, Hybrid (green) on top
+    # 1) Dijkstra bulk first — cyan, thinner, slightly transparent
     if max_count > 0:
         ranked = sorted(edge_counts.items(), key=lambda kv: kv[1])
         for (u, v), count in ranked:
             if not G.has_edge(u, v):
                 continue
-            is_q = (u, v) in quantum_edges or (v, u) in quantum_edges
-            if is_q:
+            if _is_quantum_edge(u, v, quantum_edges):
                 continue
             frac = count / max_count
             color = _corridor_color(count, max_count, is_quantum=False)
-            weight = 2.0 + 5.0 * frac
+            weight = 3.0 + 1.0 * frac  # 3–4
             line = folium.PolyLine(
                 [[G.nodes[u]["y"], G.nodes[u]["x"]], [G.nodes[v]["y"], G.nodes[v]["x"]]],
                 color=color,
                 weight=weight,
-                opacity=0.5 + 0.35 * frac,
+                opacity=0.45 + 0.25 * frac,
             )
             _no_click(line).add_to(m)
 
-        for (u, v), count in ranked:
+    # 2) Hybrid hero corridors LAST — bright lime, thick (z-order = draw order)
+    # Prefer full path polylines so hero routes stay continuous and visible.
+    drawn_hybrid = False
+    for path in hybrid_paths:
+        coords = _path_latlons(G, path)
+        if len(coords) < 2:
+            continue
+        line = folium.PolyLine(
+            coords,
+            color=HYBRID_ROUTE_COLOR,
+            weight=6.5,
+            opacity=0.95,
+        )
+        _no_click(line).add_to(m)
+        drawn_hybrid = True
+
+    # Fallback: edge segments from quantum_edges (legacy cached results)
+    if not drawn_hybrid and quantum_edges and max_count > 0:
+        for (u, v), count in edge_counts.items():
             if not G.has_edge(u, v):
                 continue
-            is_q = (u, v) in quantum_edges or (v, u) in quantum_edges
-            if not is_q:
+            if not _is_quantum_edge(u, v, quantum_edges):
                 continue
-            frac = count / max_count if max_count else 1.0
             line = folium.PolyLine(
                 [[G.nodes[u]["y"], G.nodes[u]["x"]], [G.nodes[v]["y"], G.nodes[v]["x"]]],
-                color="#2ecc71",
-                weight=3.5 + 5.5 * frac,
-                opacity=0.85 + 0.1 * frac,
+                color=HYBRID_ROUTE_COLOR,
+                weight=6.5,
+                opacity=0.95,
+            )
+            _no_click(line).add_to(m)
+    elif not drawn_hybrid and quantum_edges:
+        for key in quantum_edges:
+            u, v = key[0], key[1]
+            if not G.has_edge(u, v):
+                continue
+            line = folium.PolyLine(
+                [[G.nodes[u]["y"], G.nodes[u]["x"]], [G.nodes[v]["y"], G.nodes[v]["x"]]],
+                color=HYBRID_ROUTE_COLOR,
+                weight=6.5,
+                opacity=0.95,
             )
             _no_click(line).add_to(m)
 
@@ -451,7 +507,7 @@ def build_god_view_map(
         u, v = bridge_edge
         blocked = folium.PolyLine(
             [[G.nodes[u]["y"], G.nodes[u]["x"]], [G.nodes[v]["y"], G.nodes[v]["x"]]],
-            color="#e74c3c",
+            color=HAZARD_ROUTE_COLOR,
             weight=8,
             opacity=0.95,
             dash_array="6 8",
@@ -463,10 +519,10 @@ def build_god_view_map(
         ring = folium.Circle(
             location=[lat_e, lon_e],
             radius=frac * r_epi * 1000.0,
-            color="#e74c3c",
+            color=HAZARD_ROUTE_COLOR,
             weight=2 if frac == 1.0 else 1,
             fill=True,
-            fill_color="#e74c3c",
+            fill_color=HAZARD_ROUTE_COLOR,
             fill_opacity=op,
         )
         _no_click(ring).add_to(m)
@@ -504,16 +560,16 @@ def build_god_view_map(
             )
             _no_click(ring).add_to(m)
 
-    legend_html = """
+    legend_html = f"""
     <div style="position:fixed;bottom:28px;left:28px;z-index:9999;
          background:rgba(10,22,40,0.92);border:1px solid rgba(255,107,26,0.35);
          border-radius:8px;padding:10px 14px;font-size:12px;color:#e8eef6;
          font-family:sans-serif;line-height:1.55;max-width:300px;
          pointer-events:none;">
       <b style="color:#ff6b1a;letter-spacing:0.04em;">GOD VIEW LEGEND</b><br/>
-      <span style="color:#e74c3c;">●</span> Danger / epicenter / blocked bridge<br/>
-      <span style="color:#2ecc71;">●</span> Quantum sample arterials (Hybrid hero)<br/>
-      <span style="color:#22d3ee;">●</span> Alternate corridors (Dijkstra bulk)<br/>
+      <span style="color:{HAZARD_ROUTE_COLOR};">●</span> Danger / epicenter / blocked bridge<br/>
+      <span style="color:{HYBRID_ROUTE_COLOR};">●</span> Quantum sample arterials (Hybrid hero)<br/>
+      <span style="color:{DIJKSTRA_ROUTE_COLOR};">●</span> Alternate corridors (Dijkstra bulk)<br/>
       <span style="color:#f5c518;">●</span> Exit congestion pressure<br/>
       <span style="color:#3b82f6;">●</span> Flood / sector hazard zone<br/>
       <span style="color:#a8bdd4;font-size:11px;">Hybrid = small sample · bulk = Dijkstra</span>
@@ -845,8 +901,8 @@ def render_god_view(
         "<b>B2G / B2B:</b> Citizens escape free on the B2C tab. "
         "Here, commanders monitor <b>city-wide flows</b>, "
         "inject flood &amp; bridge failures, and rebalance the network in one trigger. "
-        "<b>Bright green = Hybrid hero sample</b> · <b>Cyan = Dijkstra bulk</b> · "
-        "<b>Red = danger / blocked</b>"
+        "<b>Bright lime = Hybrid hero sample</b> · <b>Cyan = Dijkstra bulk</b> · "
+        "<b>Red-orange = danger / blocked</b>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1001,6 +1057,7 @@ def render_god_view(
         epi,
         (result.get("edge_counts") if has_sim else None) or empty_counts,
         quantum_edges=(result.get("quantum_edges") if has_sim else None) or set(),
+        hybrid_paths=(result.get("hybrid_paths") if has_sim else None) or [],
         bridge_edge=preview_bridge,
         flood_level=preview_flood,
         map_center=st.session_state.get("gv_map_center") or [epi[1], epi[0]],
