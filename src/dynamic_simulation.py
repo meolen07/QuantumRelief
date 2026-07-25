@@ -22,10 +22,11 @@ import networkx as nx
 
 from .utils import Coord, edge_midpoint, get_graph_origin, project_local_km
 
-# Soft congestion / soft-block multiplier (Algorithm-1 spirit: prefer high
-# weight over hard removal so routing still reaches an exit).
+# Soft congestion / soft-block / flood multipliers (Algorithm-1 spirit: prefer
+# high weight over hard removal so routing still reaches an exit).
 DISRUPTION_SOFT_MULT = 5.0
 DISRUPTION_SOFT_BLOCK_MULT = 8.0
+DISRUPTION_FLOOD_MULT = 12.0  # Ondoy-like soft flood stand-in (stronger than closed)
 
 
 def _edge_key(u: Any, v: Any) -> Tuple[Any, Any]:
@@ -45,7 +46,7 @@ class EdgeDisruptionSet:
     edges: List[Tuple[Any, Any]] = field(default_factory=list)
     multiplier: float = DISRUPTION_SOFT_MULT
     seed: Optional[int] = None
-    kind: str = "congestion"  # congestion | soft_block
+    kind: str = "congestion"  # congestion | soft_block | flood
 
     def normalized_edges(self) -> List[Tuple[Any, Any]]:
         seen = set()
@@ -146,6 +147,85 @@ def sample_random_disruptions(
         multiplier=mult,
         seed=seed,
         kind=kind,
+    )
+
+
+def sample_flood_corridor(
+    G: nx.Graph,
+    *,
+    near_node: Optional[Any] = None,
+    corridor_extra: int = 11,
+    multiplier: float = DISRUPTION_FLOOD_MULT,
+    seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
+) -> EdgeDisruptionSet:
+    """
+    Ondoy-like soft flood stand-in: a larger coherent corridor with strong
+    soft penalties (×12 default).
+
+    No elevation in the cached OSM graph — prefer lower-latitude edges as a
+    low-lying / waterfront proxy and grow a connected corridor (not scattered
+    jams). Distinct from mild Congestion (×5) and Closed corridor (×8).
+    """
+    if rng is None:
+        rng = random.Random(seed)
+
+    undirected = [(u, v) for u, v in G.edges()]
+    if not undirected:
+        return EdgeDisruptionSet(
+            edges=[], multiplier=multiplier, seed=seed, kind="flood"
+        )
+
+    def _edge_lat(u: Any, v: Any) -> float:
+        return 0.5 * (float(G.nodes[u]["y"]) + float(G.nodes[v]["y"]))
+
+    # Seed near the trip start when possible; else bias to lower-lat edges.
+    seed_edge: Optional[Tuple[Any, Any]] = None
+    if near_node is not None and near_node in G:
+        incident = [(near_node, nb) for nb in G.neighbors(near_node)]
+        if incident:
+            # Prefer the lowest-lat incident edge (flood stand-in).
+            seed_edge = min(incident, key=lambda e: _edge_lat(e[0], e[1]))
+    if seed_edge is None:
+        # Rank lower-lat edges; sample among the bottom quartile.
+        ranked = sorted(undirected, key=lambda e: _edge_lat(e[0], e[1]))
+        pool = ranked[: max(1, len(ranked) // 4)]
+        seed_edge = pool[rng.randrange(len(pool))]
+
+    selected: Dict[Tuple[Any, Any], Tuple[Any, Any]] = {
+        _edge_key(seed_edge[0], seed_edge[1]): seed_edge
+    }
+    frontier = [seed_edge]
+    extra = max(0, int(corridor_extra))
+    attempts = 0
+    while extra > 0 and frontier and attempts < len(undirected) * 4:
+        attempts += 1
+        bu, bv = frontier[rng.randrange(len(frontier))]
+        candidates: List[Tuple[Any, Any]] = []
+        for node in (bu, bv):
+            for nb in G.neighbors(node):
+                key = _edge_key(node, nb)
+                if key not in selected:
+                    candidates.append((node, nb))
+        if not candidates:
+            frontier = [e for e in frontier if e != (bu, bv)]
+            if not frontier:
+                frontier = list(selected.values())
+            continue
+        # Prefer expanding toward lower latitude (coherent "flooded" band).
+        candidates.sort(key=lambda e: _edge_lat(e[0], e[1]))
+        # Soft bias: often take among the lower half of candidates.
+        cut = max(1, len(candidates) // 2)
+        nu, nv = candidates[rng.randrange(cut)]
+        selected[_edge_key(nu, nv)] = (nu, nv)
+        frontier.append((nu, nv))
+        extra -= 1
+
+    return EdgeDisruptionSet(
+        edges=list(selected.values()),
+        multiplier=float(multiplier),
+        seed=seed,
+        kind="flood",
     )
 
 
