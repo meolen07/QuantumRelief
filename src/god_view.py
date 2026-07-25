@@ -1095,7 +1095,7 @@ def render_god_view(
 
     st.markdown(
         '<div class="qr-footer">'
-        "<span>God View · Hybrid QML Command Center · Team 5 Quantrio</span>"
+        "<span>God View · Hybrid QML Command Center · Team 5 Quantrio · QC4SG — SEA Quantathon 2026</span>"
         "<span>Citizens free · Commanders in control</span>"
         "</div>",
         unsafe_allow_html=True,
