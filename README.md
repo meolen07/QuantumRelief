@@ -11,25 +11,43 @@ Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 
 Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
 
-**Tagline:** Hybrid delivers near-Dijkstra quality with quantum-classical local inference.
+**Tagline:** The map is always dynamic — Hybrid QML routes under changing edge costs.
 
 ---
 
 ## Overview
 
-QuantumRelief is a **B2G2C Escape-only** demo: emergency escape routing on the Manila **Intramuros** road network under expanding earthquake and exit-traffic hazards. A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline.
+Cities do not wait for a disaster to break routing. **Traffic, closed streets, and congestion** rewrite edge costs every hour. Static shortest path assumes a frozen graph; QuantumRelief treats the map as **live dynamics**.
+
+**Earthquake Escape** (Manila Intramuros) is the **Quantathon flagship** — an extreme dynamic-hazard stress test for judges. The broader product is the same engine applied to everyday dynamics: **B2B API + simulation now**, **B2G2C Escape** as civic proof for later.
+
+A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline under Algorithm 1 dynamic weights.
 
 Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](https://arxiv.org/abs/2307.15682)* (Furubira → Manila).
+
+**Honest scope today:** Manila OSM + **simulated** dynamics (quake / exit-traffic rings). Real traffic feeds (TomTom / HERE) are a roadmap plug-in — not integrated in this demo.
 
 **One surface**
 
 | Surface | Audience | Role |
 | --- | --- | --- |
-| **Escape** | Citizens + gov demos (B2G2C) | Your location → random epicenter → auto-best exit → Hybrid · Classical · Dijkstra |
+| **Escape** | Citizens + gov demos (B2G2C flagship) | Your location → random epicenter → auto-best exit → Hybrid · Classical · Dijkstra |
 
 `src/god_view.py` remains in-repo for optional command-center experiments but is **not** wired into the Streamlit UI.
 
 **UI palette:** deep navy · **cyan** Hybrid · **gold** Classical · orange accents · **red** hazard · white/light dashed Dijkstra.
+
+---
+
+## Problem & solution
+
+| Beat | Story |
+| --- | --- |
+| **Problem** | Static Dijkstra / A* corridors fail when edge costs move — jams, closures, cascading congestion. |
+| **Extreme case** | Earthquake + exit surge = the hardest dynamic-hazard regime (Escape demo). |
+| **Everyday case** | Same weight-update idea for traffic / closed streets / fleet shocks. |
+| **Solution** | Dynamic edge weights + **Hybrid FiLM∥PHN** local next-hop vs Classical ablation vs Dijkstra oracle. |
+| **Business** | Sell **B2B routing API / sim** now; grow **B2G2C Escape** trust over time. |
 
 ---
 
@@ -96,9 +114,10 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 - **3-way metrics** — travel time, exit reached, path overlap, quantum contribution, latency (ms)
 - **Auto-best exit** — silent ranking; one recommended-exit line in the panel
 - **Location** — Folium map click, snapped to nearest graph node
-- **Epicenter** — **Random epicenter** only
+- **Epicenter** — **Random epicenter** only (flagship disaster stress)
+- **Road disruption** — **Random road disruption** soft-penalizes a small corridor (amber dashed); stand-in for traffic / closures until TomTom / HERE
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
-- **B2G2C Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel
+- **Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel (Quantathon flagship)
 - **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 
@@ -108,13 +127,14 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 
 ```mermaid
 flowchart LR
-  UX[Streamlit Escape B2G2C] --> RS[routing_service]
+  UX[Streamlit Escape flagship] --> RS[routing_service]
   API[FastAPI B2B API] --> RS
   RS --> H[Hybrid QML FiLM]
   RS --> C[Classical FiLM]
   RS --> D[Dijkstra oracle]
   H --> PL[PennyLane PHN]
   RS --> G[Intramuros GraphML]
+  RS --> Dyn[Algorithm 1 dynamic weights]
 ```
 
 ---
@@ -151,16 +171,19 @@ Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM do
 
 ---
 
-## How to use — Escape (B2G2C)
+## How to use — Escape (flagship demo)
 
 1. **Click the map** to set your location — snapped to the nearest road node
 2. Press **Random epicenter**
-3. Read the **Best exit** line (auto-recommended)
-4. Press **Find route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
-5. Scrub hazard time **`t`** — red \(r_{epi}\) / gold \(r_{exit}\) expand
-6. Read right-panel **3-way metrics**: travel times, quantum contribution, latency
+3. (Optional) Press **Random road disruption** — amber dashed corridor = soft congestion / soft-block
+4. Read the **Best exit** line (auto-recommended)
+5. Press **Find route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
+6. Scrub hazard time **`t`** — red \(r_{epi}\) / gold \(r_{exit}\) expand (live edge costs)
+7. Read right-panel **3-way metrics**: travel times, quantum contribution, latency
 
 Layout: left **~2/3** Folium map (fixed) · right **~1/3** scrollable controls + metrics.
+
+Escape shows the **extreme** end of the dynamic-map problem; **Random road disruption** proves the same engine under everyday-style edge shocks without live traffic APIs. Real TomTom / HERE feeds are roadmap.
 
 ---
 
@@ -171,14 +194,14 @@ QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
   requirements-api.txt     # FastAPI + uvicorn
-  app.py                   # B2G2C Escape-only (Folium 2D)
+  app.py                   # Escape-only flagship (Folium 2D)
   api.py                   # B2B Quantum Routing API
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
                            # + demo_scenarios.json + hard_seeds.json
   models/                  # film_classical.pt, film_hybrid.pt
   src/
     graph_setup.py         # OSMnx / NetworkX / exits
-    dynamic_simulation.py  # Algorithm 1 weights
+    dynamic_simulation.py  # Algorithm 1 weights (disaster = extreme dynamics)
     dataset_generation.py  # Table I vectors + Dijkstra labels
     film_model.py          # Classical FiLM
     safety_loss.py         # Safety aux loss (λ_safe · L_safe)
@@ -234,6 +257,16 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 
 ---
 
+## Business & roadmap
+
+| Horizon | Focus |
+| --- | --- |
+| **Now** | Escape flagship + Hybrid / Classical / Dijkstra ablation · B2B `/api/v1/calculate_route` · simulated dynamics on Manila OSM |
+| **Next** | Plug-in live traffic / closure weights (TomTom / HERE) · multi-district graphs · fleet pilots |
+| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Escape product |
+
+---
+
 ## Deploy (Streamlit Community Cloud)
 
 1. Push to GitHub (`meolen07/QuantumRelief`), including updated `models/*.pt` and `data/retrain_report.json`
@@ -249,10 +282,10 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 ## Team
 
 **Quantrio** (Team 5) · QC4SG — SEA Quantathon 2026  
-Manila Intramuros emergency routing with Hybrid QML.
+Dynamic-edge routing with Hybrid QML — Escape flagship on Manila Intramuros.
 
 ---
 
 ## Citation
 
-Haboury et al., *A Hybrid Quantum-Classical Neural Network for Disaster Response*, [arXiv:2307.15682](https://arxiv.org/abs/2307.15682). QuantumRelief adapts the Furubira FiLM / PHN pipeline to Manila Intramuros.
+Haboury et al., *A Hybrid Quantum-Classical Neural Network for Disaster Response*, [arXiv:2307.15682](https://arxiv.org/abs/2307.15682). QuantumRelief adapts the Furubira FiLM / PHN pipeline to Manila Intramuros; Escape is the extreme dynamic case of a broader changing-map product.
