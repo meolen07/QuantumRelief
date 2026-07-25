@@ -1,16 +1,20 @@
 """
-QuantumRelief — Crisis-Driven Streamlit dashboard (Phase 4).
+QuantumRelief — B2G2C Escape-only Streamlit demo.
 
-B2C Emergency Escape (Folium 2D only): apartment start → hazard →
-ranked evacuate areas → Hybrid QML hero with Classical + Dijkstra overlays.
-Layout: left ~2/3 map, right ~1/3 controls + metrics.
+Citizens (and gov-facing demos): set your location → random quake → auto-best exit
+→ Hybrid QML vs Classical vs Dijkstra. Folium 2D only. No God View surface.
+Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Tuple
 
 import folium
 import networkx as nx
@@ -35,7 +39,6 @@ from src.quantum_hybrid import (
     ensure_hybrid_model,
     quantum_status,
 )
-from src.god_view import init_god_view_state, render_god_view, render_god_view_controls
 from src.routing_service import (
     compare_three_way,
     dijkstra_escape_route,
@@ -45,7 +48,7 @@ from src.routing_service import (
     recommend_best_exit,
     route_overlap_accuracy as _rs_route_overlap,
 )
-from src.utils import DATA_DIR, get_graph_origin
+from src.utils import get_graph_origin
 
 st.set_page_config(
     page_title="QuantumRelief",
@@ -54,21 +57,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Preset apartment / current-location pins (lat, lon) inside Intramuros.
-APARTMENT_PRESETS = [
-    {"id": "default", "label": "Your apartment (Intramuros)", "lat": 14.5908, "lon": 120.9752},
-    {"id": "fort", "label": "Near Fort Santiago", "lat": 14.5940, "lon": 120.9708},
-    {"id": "cathedral", "label": "Near Manila Cathedral", "lat": 14.5896, "lon": 120.9734},
-]
-
-# --- Crisis Core aesthetic (Lovable-aligned): deep navy + cyan Hybrid + gold Classical ---
-# Map route palette (shared with Folium overlays + God View)
 HYBRID_ROUTE_COLOR = "#00E5FF"
 CLASSICAL_ROUTE_COLOR = "#F5C542"
 DIJKSTRA_ROUTE_COLOR = "#E8EEF6"
 HAZARD_ROUTE_COLOR = "#FF4D6A"
 EXIT_RING_COLOR = "#F5C542"
 ORANGE_ACCENT = "#FF8A4C"
+
+MAP_H = 820  # concrete Folium px height (avoid % → black map)
 
 st.markdown(
     """
@@ -77,7 +73,6 @@ st.markdown(
     :root {
       --qr-bg: #0a0b10;
       --qr-navy: #0a0f1e;
-      --qr-deep: #0e1528;
       --qr-panel: rgba(14, 22, 40, 0.78);
       --qr-cyan: #00E5FF;
       --qr-gold: #F5C542;
@@ -100,18 +95,17 @@ st.markdown(
       letter-spacing: -0.01em;
       color: #f4f7fb !important;
     }
-    [data-testid="stSidebar"] {
-      background: linear-gradient(180deg, #0a0f1e 0%, #0c1220 100%);
-      border-right: 1px solid rgba(0,229,255,0.12);
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarCollapsedControl"] {
+      display: none !important;
     }
-    [data-testid="stSidebar"] .block-container { padding-top: 1rem; }
     .qr-header {
       display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem;
-      margin: 0 0 0.35rem 0;
+      margin: 0 0 0.2rem 0;
     }
     .qr-brand {
       font-family: 'DM Sans', system-ui, sans-serif;
-      font-size: 2.35rem;
+      font-size: 1.55rem;
       font-weight: 700;
       color: #f4f7fb;
       margin: 0;
@@ -127,7 +121,6 @@ st.markdown(
       color: var(--qr-cyan);
       background: rgba(0,229,255,0.10);
       border: 1px solid rgba(0,229,255,0.35);
-      box-shadow: 0 0 18px rgba(0,229,255,0.12);
     }
     .qr-online .dot {
       width: 7px; height: 7px; border-radius: 50%;
@@ -135,266 +128,174 @@ st.markdown(
       box-shadow: 0 0 8px rgba(0,229,255,0.8);
     }
     .qr-tagline {
-      font-family: 'DM Sans', system-ui, sans-serif;
-      font-size: 1.15rem;
-      font-weight: 600;
-      color: #fff;
-      letter-spacing: -0.01em;
-      margin: 0.15rem 0 0.1rem 0;
+      font-size: 0.95rem; font-weight: 600; color: #fff;
+      margin: 0.05rem 0 0.15rem 0;
     }
     .qr-tag {
-      color: var(--qr-mist);
-      font-size: 0.92rem;
-      margin: 0.1rem 0 0.75rem 0;
-    }
-    .qr-team {
-      display: inline-flex; flex-wrap: wrap; gap: 0.45rem; align-items: center;
-      margin: 0 0 0.85rem 0;
-    }
-    .qr-team .chip {
-      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em;
-      text-transform: uppercase; padding: 0.28rem 0.7rem; border-radius: 999px;
-      border: 1px solid rgba(255,138,76,0.4); color: #ffb08a;
-      background: rgba(255,138,76,0.1);
-    }
-    .qr-team .chip.soft {
-      border-color: rgba(154,168,188,0.28); color: var(--qr-mist);
-      background: rgba(14,22,40,0.65);
-    }
-    .qr-steps {
-      display: flex; gap: 0.45rem; flex-wrap: wrap;
-      margin-bottom: 0.85rem;
-    }
-    .qr-step {
-      background: rgba(14,22,40,0.85);
-      border: 1px solid rgba(154,168,188,0.18);
-      border-radius: 999px;
-      padding: 0.42rem 0.85rem;
-      font-size: 0.8rem;
-      color: var(--qr-mist);
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
-    }
-    .qr-step b { color: var(--qr-cyan); margin-right: 0.35rem; }
-    .qr-step.active {
-      border-color: rgba(0,229,255,0.55);
-      color: #fff;
-      box-shadow: 0 0 0 1px rgba(0,229,255,0.25), 0 0 20px rgba(0,229,255,0.14);
-      background: rgba(0,229,255,0.12);
-    }
-    .qr-step.done {
-      border-color: rgba(0,229,255,0.35);
-      color: #9eecf8;
+      color: var(--qr-mist); font-size: 0.88rem;
+      margin: 0 0 0.55rem 0;
     }
     .qr-card {
       background: linear-gradient(160deg, rgba(16,24,42,0.92), rgba(10,15,30,0.88));
       border: 1px solid rgba(154,168,188,0.16);
-      border-radius: 18px;
-      padding: 1rem 1.05rem;
-      height: 100%;
-      backdrop-filter: blur(10px);
-      box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+      border-radius: 14px;
+      padding: 0.85rem 0.95rem;
+      margin-bottom: 0.45rem;
       position: relative;
     }
-    .qr-card.win {
-      border-color: rgba(0,229,255,0.5);
-      box-shadow: 0 0 0 1px rgba(0,229,255,0.18), 0 8px 32px rgba(0,229,255,0.08);
-    }
-    .qr-card.hybrid {
-      border-color: rgba(0,229,255,0.45);
-      box-shadow: 0 0 24px rgba(0,229,255,0.1);
-    }
+    .qr-card.win { border-color: rgba(0,229,255,0.5); }
+    .qr-card.hybrid { border-color: rgba(0,229,255,0.45); }
     .qr-card.classical { border-color: rgba(245,197,66,0.35); }
     .qr-card.dijkstra { border-color: rgba(232,238,246,0.22); }
     .qr-hero-pill {
-      position: absolute; top: 0.75rem; right: 0.75rem;
+      position: absolute; top: 0.65rem; right: 0.65rem;
       font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 999px;
       color: #041018; background: var(--qr-cyan);
-      box-shadow: 0 0 14px rgba(0,229,255,0.45);
     }
     .qr-card .label {
-      color: var(--qr-mist);
-      font-size: 0.74rem;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      margin-bottom: 0.35rem;
-      padding-right: 3.2rem;
+      color: var(--qr-mist); font-size: 0.72rem;
+      text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.3rem;
     }
     .qr-card .value {
-      font-family: 'DM Sans', system-ui, sans-serif;
-      font-size: 1.85rem;
-      font-weight: 700;
-      color: #fff;
-      line-height: 1.1;
+      font-size: 1.7rem; font-weight: 700; color: #fff; line-height: 1.1;
     }
     .qr-card .value.accent { color: var(--qr-cyan); }
     .qr-card .value.gold { color: var(--qr-gold); }
     .qr-card .value.dij { color: var(--qr-dij); }
-    .qr-card .sub {
-      color: var(--qr-mist);
-      font-size: 0.82rem;
-      margin-top: 0.3rem;
-    }
+    .qr-card .sub { color: var(--qr-mist); font-size: 0.8rem; margin-top: 0.25rem; }
     .qr-ro {
       background: rgba(10,15,30,0.65);
       border: 1px solid rgba(154,168,188,0.16);
-      border-radius: 14px;
-      padding: 0.55rem 0.75rem;
-      font-size: 0.82rem;
-      color: var(--qr-mist);
+      border-radius: 12px;
+      padding: 0.5rem 0.7rem;
+      font-size: 0.82rem; color: var(--qr-mist);
       margin-bottom: 0.4rem;
     }
     .qr-ro strong { color: #fff; }
     .qr-badge {
-      display: inline-block;
-      padding: 0.35rem 0.75rem;
-      border-radius: 999px;
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
+      display: inline-block; padding: 0.3rem 0.7rem; border-radius: 999px;
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em;
     }
     .qr-badge.ok {
       background: rgba(0,229,255,0.14); color: var(--qr-cyan);
       border: 1px solid rgba(0,229,255,0.4);
-      box-shadow: 0 0 16px rgba(0,229,255,0.14);
     }
     .qr-badge.warn {
       background: rgba(255,138,76,0.12); color: #ffb08a;
       border: 1px solid rgba(255,138,76,0.35);
     }
-    .qr-click-panel {
-      background: linear-gradient(135deg, rgba(0,229,255,0.08), rgba(14,22,40,0.92));
-      border: 1px solid rgba(0,229,255,0.28);
-      border-radius: 16px;
-      padding: 0.8rem 0.9rem;
-      margin: 0.4rem 0 0.7rem 0;
+    .qr-panel {
+      background: linear-gradient(165deg, rgba(14,22,40,0.94), rgba(10,15,30,0.9));
+      border: 1px solid rgba(154,168,188,0.16);
+      border-radius: 14px;
+      padding: 0.75rem 0.85rem;
+      margin-bottom: 0.55rem;
     }
-    .qr-click-panel .title {
-      font-family: 'DM Sans', system-ui, sans-serif;
-      font-size: 0.98rem; font-weight: 700; color: #fff;
-      margin-bottom: 0.25rem;
+    .qr-panel h3 {
+      margin: 0 0 0.4rem 0 !important;
+      font-size: 0.88rem !important;
+      color: #fff !important;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
+    .qr-rec {
+      background: linear-gradient(135deg, rgba(0,229,255,0.12), rgba(14,22,40,0.95));
+      border: 1px solid rgba(0,229,255,0.4);
+      border-radius: 12px;
+      padding: 0.55rem 0.75rem;
+      margin: 0.35rem 0 0.5rem 0;
+      font-size: 0.85rem; color: var(--qr-mist);
+    }
+    .qr-rec strong { color: #fff; }
     .qr-footer {
-      margin-top: 1.5rem; padding-top: 0.85rem;
+      margin-top: 0.75rem; padding-top: 0.65rem;
       border-top: 1px solid rgba(154,168,188,0.12);
-      color: var(--qr-mist); font-size: 0.8rem;
-      display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: space-between;
+      color: var(--qr-mist); font-size: 0.75rem;
     }
-    .qr-map-hint {
-      background: rgba(14,22,40,0.72);
-      border-left: 3px solid var(--qr-cyan);
-      border-radius: 0 12px 12px 0;
-      padding: 0.55rem 0.85rem;
-      margin: 0.35rem 0 0.65rem 0;
-      color: var(--qr-mist); font-size: 0.9rem;
-    }
-    .qr-map-hint b { color: #fff; }
     div[data-testid="stMetricValue"] { color: #f4f7fb; }
-    /* Primary CTAs — cyan glow pills */
-    div[data-testid="stSidebar"] button[kind="primary"],
     button[kind="primary"] {
       font-weight: 700 !important;
       letter-spacing: 0.04em;
-      min-height: 3rem;
+      min-height: 2.75rem;
       border-radius: 999px !important;
       background: linear-gradient(135deg, #00E5FF 0%, #00B8D4 100%) !important;
       color: #041018 !important;
       border: none !important;
-      box-shadow: 0 0 22px rgba(0,229,255,0.35), 0 4px 14px rgba(0,0,0,0.25) !important;
+      box-shadow: 0 0 22px rgba(0,229,255,0.35) !important;
     }
-    div[data-testid="stSidebar"] button[kind="secondary"],
     button[kind="secondary"] {
       border-radius: 999px !important;
       border: 1px solid rgba(154,168,188,0.28) !important;
       background: rgba(14,22,40,0.7) !important;
       color: var(--qr-ink) !important;
     }
-    /* Active place-mode pill (cyan fill) */
-    div[data-testid="stSidebar"] button[kind="primary"].place-active,
-    button[data-testid="baseButton-primary"] {
-      /* covered by primary rule above */
-    }
     section.main .block-container {
-      padding-top: 0.75rem;
-      padding-bottom: 1rem;
-      max-width: 1680px;
-      padding-left: 1rem;
-      padding-right: 1rem;
+      padding-top: 0.35rem !important;
+      padding-bottom: 0.35rem !important;
+      padding-left: 0.75rem !important;
+      padding-right: 0.75rem !important;
+      max-width: 100% !important;
     }
-    /* B2C sidebar hide is injected in the B2C branch only (keeps God View intact). */
-    .qr-panel {
-      background: linear-gradient(165deg, rgba(14,22,40,0.94), rgba(10,15,30,0.9));
-      border: 1px solid rgba(154,168,188,0.16);
-      border-radius: 16px;
-      padding: 0.85rem 0.95rem;
-      margin-bottom: 0.65rem;
+    /* Escape layout: fixed row height · left map · right scrolls.
+       Do NOT set overflow:hidden on html/body/.stApp (black Folium).
+       Do NOT wrap st_folium in a markdown div. */
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"]),
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"]) {
+      --qr-map-h: 820px;
+      align-items: stretch !important;
+      gap: 0.65rem !important;
+      height: var(--qr-map-h) !important;
+      max-height: var(--qr-map-h) !important;
+      overflow: hidden !important;
+      flex-wrap: nowrap !important;
     }
-    .qr-panel h3 {
-      margin: 0 0 0.45rem 0 !important;
-      font-size: 0.95rem !important;
-      color: #fff !important;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+      > [data-testid="stColumn"],
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+      > [data-testid="stColumn"] {
+      min-height: 0 !important;
+      height: var(--qr-map-h) !important;
+      max-height: var(--qr-map-h) !important;
     }
-    .qr-rec {
-      background: linear-gradient(135deg, rgba(0,229,255,0.14), rgba(14,22,40,0.95));
-      border: 1px solid rgba(0,229,255,0.45);
-      border-radius: 14px;
-      padding: 0.75rem 0.85rem;
-      margin: 0.4rem 0 0.65rem 0;
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+      > [data-testid="stColumn"]:has(iframe),
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+      > [data-testid="stColumn"]:has(iframe) {
+      position: sticky !important;
+      top: 0.25rem !important;
+      overflow: hidden !important;
+      z-index: 2;
     }
-    .qr-rec .title { color: #fff; font-weight: 700; font-size: 1.05rem; }
-    .qr-rec .meta { color: var(--qr-mist); font-size: 0.82rem; margin-top: 0.25rem; }
-    .qr-exit-row {
-      display: flex; justify-content: space-between; gap: 0.5rem;
-      padding: 0.4rem 0.55rem; margin: 0.25rem 0;
-      border-radius: 10px;
-      background: rgba(10,15,30,0.55);
-      border: 1px solid rgba(154,168,188,0.12);
-      font-size: 0.8rem; color: var(--qr-mist);
-    }
-    .qr-exit-row.best {
-      border-color: rgba(0,229,255,0.45);
-      background: rgba(0,229,255,0.08);
-      color: #fff;
-    }
-    .qr-map-wrap {
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid rgba(154,168,188,0.14);
-      box-shadow: 0 12px 36px rgba(0,0,0,0.35);
-    }
-    /* Folium iframe chrome (applied to the iframe parent, not a fake wrap div) */
-    iframe[title*="streamlit_folium"],
-    iframe[title*="folium"] {
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+      > [data-testid="stColumn"]:has(iframe) iframe,
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+      > [data-testid="stColumn"]:has(iframe) iframe {
+      height: 820px !important;
+      min-height: 820px !important;
+      max-height: 820px !important;
+      width: 100% !important;
+      display: block !important;
       border-radius: 16px;
       border: 1px solid rgba(154,168,188,0.14) !important;
-      box-shadow: 0 12px 36px rgba(0,0,0,0.35);
     }
-    /* Top-level surface switcher */
-    div[data-testid="stRadio"] > div {
-      gap: 0.35rem;
-      background: rgba(10,15,30,0.65);
-      border: 1px solid rgba(154,168,188,0.16);
-      border-radius: 999px;
-      padding: 0.3rem;
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+      > [data-testid="stColumn"]:not(:has(iframe)),
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+      > [data-testid="stColumn"]:not(:has(iframe)) {
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch !important;
+      overscroll-behavior: contain;
+      padding-right: 0.35rem;
     }
-    div[data-testid="stRadio"] label {
-      background: transparent !important;
-      border-radius: 999px !important;
-      padding: 0.45rem 0.95rem !important;
-      font-family: 'DM Sans', system-ui, sans-serif !important;
-      font-weight: 600 !important;
-      font-size: 0.95rem !important;
-      letter-spacing: 0.02em;
-      color: var(--qr-mist) !important;
-    }
-    div[data-testid="stRadio"] label[data-checked="true"],
-    div[data-testid="stRadio"] label:has(input:checked) {
-      background: rgba(0,229,255,0.16) !important;
-      color: #fff !important;
-      border: 1px solid rgba(0,229,255,0.4);
-      box-shadow: 0 0 16px rgba(0,229,255,0.12);
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+      > [data-testid="stColumn"]:not(:has(iframe)) > div,
+    div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+      > [data-testid="stColumn"]:not(:has(iframe)) > div {
+      max-height: none !important;
+      height: auto !important;
+      overflow: visible !important;
     }
     </style>
     """,
@@ -420,29 +321,23 @@ def get_hybrid_model():
 
 
 def nearest_node(G: nx.Graph, lat: float, lon: float, candidates=None):
-    """Snap a map click to the nearest graph node (haversine-ish Euclidean deg)."""
     return _rs_nearest_node(G, lat, lon, candidates=candidates)
 
 
 def path_travel_time(G: nx.Graph, path: List) -> float:
-    """Sum edge travel weights along a path (minutes-scale nominal units)."""
     return _rs_path_travel_time(G, path)
 
 
 def route_overlap_accuracy(pred: List, oracle: List) -> float:
-    """Node-set overlap vs Dijkstra oracle (demo-friendly accuracy %)."""
     return _rs_route_overlap(pred, oracle)
 
 
 def _no_click(layer):
-    """Stop Folium overlays from stealing map clicks (Leaflet interactive=False)."""
+    """Stop Folium overlays from stealing map clicks."""
     try:
-        # Folium path_options() silently drops interactive= from Circle() kwargs —
-        # always set it on the serialized options dict after construction.
         layer.options["interactive"] = False
         if "bubblingMouseEvents" in layer.options:
             layer.options["bubblingMouseEvents"] = False
-        # Popups/tooltips re-enable hit-testing in Leaflet; drop them on overlays.
         if hasattr(layer, "popup"):
             layer.popup = None
         if hasattr(layer, "tooltip"):
@@ -453,16 +348,68 @@ def _no_click(layer):
 
 
 def _set_epicenter(lat: float, lon: float) -> None:
-    """Write canonical epicenter coords (never bind these keys to number_input)."""
     st.session_state["epi_lat"] = float(lat)
     st.session_state["epi_lon"] = float(lon)
-    # Keep Advanced inputs in sync if they exist (separate widget keys).
-    st.session_state["epi_lat_input"] = float(lat)
-    st.session_state["epi_lon_input"] = float(lon)
+
+
+def _parse_lat_lon(text: str) -> Optional[Tuple[float, float]]:
+    """Parse 'lat, lon' or 'lat lon' from a free-text field."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    m = re.match(
+        r"^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$",
+        raw,
+    )
+    if not m:
+        return None
+    a, b = float(m.group(1)), float(m.group(2))
+    # Manila Intramuros ≈ lat 14.59, lon 120.97 — detect swapped order
+    if 14.0 <= a <= 15.5 and 120.0 <= b <= 122.0:
+        return a, b
+    if 14.0 <= b <= 15.5 and 120.0 <= a <= 122.0:
+        return b, a
+    # Accept any plausible lat/lon pair
+    if -90 <= a <= 90 and -180 <= b <= 180:
+        return a, b
+    return None
+
+
+def _geocode_address(query: str) -> Optional[Tuple[float, float]]:
+    """Nominatim lookup (no extra deps). Prefer Intramuros / Manila bias."""
+    q = (query or "").strip()
+    if not q:
+        return None
+    if "manila" not in q.lower() and "intramuros" not in q.lower():
+        q = f"{q}, Intramuros, Manila, Philippines"
+    url = (
+        "https://nominatim.openstreetmap.org/search?"
+        + urllib.parse.urlencode(
+            {"q": q, "format": "json", "limit": 1, "countrycodes": "ph"}
+        )
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "QuantumRelief-EscapeDemo/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if not data:
+            return None
+        return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception:
+        return None
+
+
+def _resolve_location_input(text: str) -> Optional[Tuple[float, float]]:
+    parsed = _parse_lat_lon(text)
+    if parsed is not None:
+        return parsed
+    return _geocode_address(text)
 
 
 def build_base_map(G, exits, map_center, map_zoom: int = 16):
-    """Build road graph map. map_center is [lat, lon]."""
     m = folium.Map(
         location=list(map_center),
         zoom_start=int(map_zoom),
@@ -482,12 +429,11 @@ def build_base_map(G, exits, map_center, map_zoom: int = 16):
     for i, ex in enumerate(exits):
         marker = folium.CircleMarker(
             location=[G.nodes[ex]["y"], G.nodes[ex]["x"]],
-            radius=8,
+            radius=7,
             color=ORANGE_ACCENT,
             fill=True,
             fill_color=ORANGE_ACCENT,
             fill_opacity=0.85,
-            popup=f"Exit {i + 1}",
         )
         _no_click(marker).add_to(m)
     return m
@@ -503,78 +449,19 @@ def predict_route(
     epicenter_lonlat,
     max_steps: int | None = None,
 ):
-    """Thin wrapper — shared Hybrid / Classical rollout (routing_service)."""
     return predict_escape_route(
         G, model, mean, std, start, dest, epicenter_lonlat, max_steps=max_steps
     )
 
 
 def dijkstra_route(G, start, dest, epicenter_lonlat, max_steps=120):
-    """Oracle node-wise Dijkstra under the same dynamics."""
     path, _radii, _env, travel, _meta = dijkstra_escape_route(
         G, start, dest, epicenter_lonlat, max_steps=max_steps
     )
     return path, travel
 
 
-# Curated QA scenarios (data/demo_scenarios.json) can still be loaded
-# programmatically via _load_demo_scenarios / _apply_demo_scenario — no UI buttons.
-
-
-def _load_demo_scenarios() -> list:
-    """Curated Quantum Advantage scenarios from data/demo_scenarios.json."""
-    path = DATA_DIR / "demo_scenarios.json"
-    if not path.exists():
-        return []
-    try:
-        import json
-
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return list(payload.get("scenarios") or [])
-    except Exception:
-        return []
-
-
-def _apply_demo_scenario(G, exits, scenario: dict) -> str:
-    """Set start / epicenter / exit from a curated scenario; queue auto-calculate."""
-    _clear_route_results()
-    start = scenario.get("start_node")
-    dest = scenario.get("dest_node")
-    # Coerce node ids to graph key types
-    if start not in G.nodes:
-        start = nearest_node(
-            G,
-            float(scenario["start_lat"]),
-            float(scenario["start_lon"]),
-            candidates=[n for n in G.nodes() if n not in exits],
-        )
-    if dest not in G.nodes:
-        dest = nearest_node(
-            G,
-            float(scenario["exit_lat"]),
-            float(scenario["exit_lon"]),
-            candidates=exits,
-        )
-    st.session_state["start_node"] = start
-    st.session_state["dest_node"] = dest
-    _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
-    st.session_state["map_center"] = [
-        float(scenario["epi_lat"]),
-        float(scenario["epi_lon"]),
-    ]
-    st.session_state["select_mode"] = "Start"
-    st.session_state["flow_step"] = 2
-    st.session_state["pending_calculate"] = True
-    st.session_state["show_classical_overlay"] = True
-    st.session_state["show_dijkstra_overlay"] = True
-    title = scenario.get("title", "Quantum Advantage")
-    msg = f"Loaded {title} — calculating 3-way compare…"
-    st.session_state["map_status"] = msg
-    return msg
-
-
 def _clear_route_results():
-    """Drop calculated route so a new apartment / epicenter / exit can be chosen."""
     for k in (
         "path",
         "classical_path",
@@ -598,118 +485,84 @@ def _clear_route_results():
         "classical_reached",
         "dij_reached",
         "compare_narrative",
-        "show_classical_overlay",
-        "show_dijkstra_overlay",
         "latency_ms",
         "is_hybrid_route",
+        "_step_reveal",
     ):
         st.session_state.pop(k, None)
 
 
-def _apartment_preset_by_id(preset_id: str) -> dict:
-    for p in APARTMENT_PRESETS:
-        if p["id"] == preset_id:
-            return p
-    return APARTMENT_PRESETS[0]
-
-
 def _refresh_exit_ranking(G, exits) -> List[dict]:
-    """Rank candidate evacuate areas; set recommended dest unless user locked an exit."""
+    """Auto-pick best exit silently; store one-line ranking meta."""
     start = st.session_state["start_node"]
     epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
     best, ranking = recommend_best_exit(G, start, exits, epi)
     st.session_state["exit_ranking"] = ranking
     st.session_state["recommended_exit"] = best
-    if ranking and not st.session_state.get("exit_override"):
-        st.session_state["dest_node"] = best
+    st.session_state["dest_node"] = best
     return ranking
 
 
-def _set_apartment(G, exits, lat: float, lon: float, *, preset_id: Optional[str] = None) -> None:
-    """Snap apartment pin to nearest non-exit road node."""
+def _set_location(G, exits, lat: float, lon: float) -> None:
+    """Snap user location to nearest non-exit road node."""
     candidates = [n for n in G.nodes() if n not in exits]
     node = nearest_node(G, float(lat), float(lon), candidates)
     st.session_state["start_node"] = node
-    st.session_state["apartment_lat"] = float(G.nodes[node]["y"])
-    st.session_state["apartment_lon"] = float(G.nodes[node]["x"])
-    if preset_id is not None:
-        st.session_state["apartment_preset"] = preset_id
-        st.session_state["apartment_select"] = preset_id
+    st.session_state["loc_lat"] = float(G.nodes[node]["y"])
+    st.session_state["loc_lon"] = float(G.nodes[node]["x"])
     st.session_state["map_center"] = [
-        float(st.session_state["apartment_lat"]),
-        float(st.session_state["apartment_lon"]),
+        float(st.session_state["loc_lat"]),
+        float(st.session_state["loc_lon"]),
     ]
+    st.session_state["loc_input"] = (
+        f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
+    )
 
 
 def _init_session(G, exits, nodes, origin):
     xs = [G.nodes[n]["x"] for n in nodes]
     ys = [G.nodes[n]["y"] for n in nodes]
-    if "select_mode" not in st.session_state:
-        # B2C: map click places earthquake epicenter by default
-        st.session_state["select_mode"] = "Epicenter"
-    if "apartment_preset" not in st.session_state:
-        st.session_state["apartment_preset"] = APARTMENT_PRESETS[0]["id"]
     if "start_node" not in st.session_state:
-        preset = _apartment_preset_by_id(st.session_state["apartment_preset"])
-        _set_apartment(G, exits, preset["lat"], preset["lon"], preset_id=preset["id"])
-    if "apartment_lat" not in st.session_state:
+        # Default near Intramuros center
+        _set_location(G, exits, 14.5908, 120.9752)
+    if "loc_lat" not in st.session_state:
         n0 = st.session_state["start_node"]
-        st.session_state["apartment_lat"] = float(G.nodes[n0]["y"])
-        st.session_state["apartment_lon"] = float(G.nodes[n0]["x"])
+        st.session_state["loc_lat"] = float(G.nodes[n0]["y"])
+        st.session_state["loc_lon"] = float(G.nodes[n0]["x"])
+    if "loc_input" not in st.session_state:
+        st.session_state["loc_input"] = (
+            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
+        )
     if "dest_node" not in st.session_state:
         st.session_state["dest_node"] = exits[0]
     if "epi_lat" not in st.session_state:
-        # Default quake slightly SE of apartment so routes are non-trivial
         st.session_state["epi_lat"] = float(np.mean(ys)) - 0.0015
         st.session_state["epi_lon"] = float(np.mean(xs)) + 0.0012
-    if "epi_lat_input" not in st.session_state:
-        st.session_state["epi_lat_input"] = float(st.session_state["epi_lat"])
-        st.session_state["epi_lon_input"] = float(st.session_state["epi_lon"])
-    if "flow_step" not in st.session_state:
-        st.session_state["flow_step"] = 1
     if "map_center" not in st.session_state:
         st.session_state["map_center"] = [
-            float(st.session_state.get("apartment_lat", origin[1])),
-            float(st.session_state.get("apartment_lon", origin[0])),
+            float(st.session_state.get("loc_lat", origin[1])),
+            float(st.session_state.get("loc_lon", origin[0])),
         ]
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
-        st.session_state["map_status"] = (
-            "You are in your apartment. Click the map to place the earthquake epicenter."
-        )
-    if "exit_override" not in st.session_state:
-        st.session_state["exit_override"] = False
+        st.session_state["map_status"] = "Click the map to set your location."
     if "exit_ranking" not in st.session_state:
         _refresh_exit_ranking(G, exits)
 
 
 def _apply_map_click(G, exits, lat: float, lon: float) -> str:
-    """B2C map click: Epicenter (default) or Apartment. Dedup by coordinates only."""
-    mode = st.session_state.get("select_mode", "Epicenter")
+    """Map click sets user location (snapped to nearest graph node)."""
     _clear_route_results()
-    st.session_state["flow_step"] = 1
     st.session_state["map_center"] = [float(lat), float(lon)]
-
-    if mode == "Apartment":
-        _set_apartment(G, exits, lat, lon, preset_id="custom")
-        st.session_state["select_mode"] = "Epicenter"
-        st.session_state["exit_override"] = False
-        _refresh_exit_ranking(G, exits)
-        msg = (
-            f"Apartment → node {st.session_state['start_node']}. "
-            "Next: click the earthquake epicenter."
-        )
-    else:
-        _set_epicenter(lat, lon)
-        st.session_state["exit_override"] = False
-        _refresh_exit_ranking(G, exits)
-        best = st.session_state.get("recommended_exit", st.session_state["dest_node"])
-        msg = (
-            f"Epicenter → {lat:.5f}, {lon:.5f}. "
-            f"Recommended evacuate area → node {best}."
-        )
-
+    _set_location(G, exits, lat, lon)
+    _refresh_exit_ranking(G, exits)
+    best = st.session_state.get("recommended_exit", st.session_state["dest_node"])
+    msg = (
+        f"Location → {st.session_state['loc_lat']:.5f}, "
+        f"{st.session_state['loc_lon']:.5f} (node {st.session_state['start_node']}). "
+        f"Best exit → node {best}."
+    )
     st.session_state["map_status"] = msg
     return msg
 
@@ -718,35 +571,17 @@ def main():
     st.markdown(
         '<div class="qr-header">'
         '<div class="qr-brand">Quantum<span>Relief</span></div>'
-        '<span class="qr-online"><span class="dot"></span>⚡ Hybrid QML · Online</span>'
+        '<span class="qr-online"><span class="dot"></span>Hybrid QML · Online</span>'
         "</div>",
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Emergency Escape · Manila · Intramuros</div>',
+        '<div class="qr-tagline">Escape · Manila Intramuros · B2G2C</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Wake in your apartment during an earthquake — '
-        "we rank evacuate areas and route you out with Hybrid QML.</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="qr-map-hint qr-top-legend" style="margin-top:0.15rem">'
-        "<b>Safest + fastest escape:</b> Hybrid QML recommends the best evacuate area, "
-        "then compares routes under a live quake sweep. "
-        f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan = Hybrid QML</b> · "
-        f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold = Classical FiLM</b> · "
-        f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White dashed = Dijkstra</b> · "
-        f"<b style='color:{HAZARD_ROUTE_COLOR}'>Red = earthquake</b>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="qr-team">'
-        '<span class="chip">Team 5 — Quantrio</span>'
-        '<span class="chip soft">QC4SG · SEA Quantathon 2026</span>'
-        "</div>",
+        '<div class="qr-tag">Set your location. We pick the safest exit and route you out '
+        "with Hybrid QML — compared to Classical and Dijkstra.</div>",
         unsafe_allow_html=True,
     )
 
@@ -764,7 +599,6 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, exits, nodes, origin)
 
-    # Apply pending map click BEFORE widgets (avoids Streamlit overwriting keyed selectboxes)
     if "_map_click" in st.session_state:
         lat_p, lon_p = st.session_state.pop("_map_click")
         msg = _apply_map_click(G, exits, float(lat_p), float(lon_p))
@@ -773,402 +607,116 @@ def main():
         except Exception:
             pass
 
-    # Top-level surfaces (radio = tab-equivalent; only active branch runs — sidebar-safe)
-    surface = st.radio(
-        "App surface",
-        options=["B2C Emergency Escape", "Command Center (God View)"],
-        horizontal=True,
-        key="app_surface",
-        label_visibility="collapsed",
-    )
-
-    if surface == "Command Center (God View)":
-        # Init session before sidebar widgets so epicenter / batch defaults stick
-        init_god_view_state(G, exits, origin)
-        with st.sidebar:
-            controls = render_god_view_controls()
-        hybrid_model = mean = std = None
-        if pl_ok:
-            try:
-                hybrid_model, mean, std = get_hybrid_model()
-            except Exception as gv_exc:
-                st.warning(
-                    f"Hybrid model unavailable for God View — {gv_exc}. "
-                    "Metrics still render; trigger uses Dijkstra bulk (no Hybrid heroes)."
-                )
-        render_god_view(
-            G,
-            exits,
-            hybrid_model,
-            mean,
-            std,
-            pennylane_ok=pl_ok,
-            controls=controls,
-        )
-        return
-
-    # ---------- B2C Emergency Escape: 2/3 map · 1/3 controls ----------
-    # Layout CSS is B2C-branch-only (God View returns above → normal scroll + sidebar).
-    # Soft layout: do NOT lock html/body/.stApp with overflow:hidden — that collapses
-    # Folium/Leaflet (black map) and can prevent the right column from scrolling.
-    _B2C_MAP_H = 820  # concrete px; must match st_folium height below
-    st.markdown(
-        f"""
-        <style>
-        /* B2C: map column fills · controls panel scrolls independently */
-        [data-testid="stSidebar"],
-        [data-testid="stSidebarCollapsedControl"] {{
-          display: none !important;
-        }}
-        .qr-brand {{ font-size: 1.55rem !important; }}
-        .qr-tagline {{ font-size: 0.95rem !important; margin: 0.05rem 0 !important; }}
-        .qr-tag,
-        .qr-team,
-        .qr-top-legend {{
-          display: none !important;
-        }}
-        section.main .block-container {{
-          padding-top: 0.35rem !important;
-          padding-bottom: 0.35rem !important;
-          padding-left: 0.75rem !important;
-          padding-right: 0.75rem !important;
-          max-width: 100% !important;
-        }}
-        /* Map | panel row: constrain height so right col can scroll */
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"]),
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"]) {{
-          align-items: flex-start !important;
-          gap: 0.65rem !important;
-          max-height: min(calc(100vh - 6.5rem), {_B2C_MAP_H + 24}px) !important;
-        }}
-        /* Left 2/3 — show Folium at fixed pixel height (no % height chain) */
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
-          > div[data-testid="column"]:nth-child(1),
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
-          > div[data-testid="column"]:nth-child(1) {{
-          overflow: visible !important;
-        }}
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
-          > div[data-testid="column"]:nth-child(1) iframe,
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
-          > div[data-testid="column"]:nth-child(1) iframe {{
-          height: {_B2C_MAP_H}px !important;
-          min-height: {_B2C_MAP_H}px !important;
-          max-height: {_B2C_MAP_H}px !important;
-          width: 100% !important;
-        }}
-        /* Right 1/3 — independent scroll (concrete max-height, not % of hidden parents) */
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
-          > div[data-testid="column"]:nth-child(2),
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
-          > div[data-testid="column"]:nth-child(2) {{
-          overflow-x: hidden !important;
-          overflow-y: auto !important;
-          max-height: {_B2C_MAP_H}px !important;
-          height: {_B2C_MAP_H}px !important;
-          padding-right: 0.35rem;
-          overscroll-behavior: contain;
-        }}
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
-          > div[data-testid="column"]:nth-child(2) > div,
-        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
-          > div[data-testid="column"]:nth-child(2) > div {{
-          max-height: none !important;
-          height: auto !important;
-          overflow: visible !important;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     start_options = [n for n in nodes if n not in exits]
     if st.session_state["start_node"] not in start_options:
         st.session_state["start_node"] = start_options[0]
     if st.session_state["dest_node"] not in exits:
         st.session_state["dest_node"] = exits[0]
-        st.session_state["exit_override"] = False
 
-    # Keep ranking fresh when points change without a stored ranking
     if not st.session_state.get("exit_ranking"):
         _refresh_exit_ranking(G, exits)
 
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
-    # ==================================================================
-    # RIGHT PANEL (~1/3) — controls + ranking + metrics (independent scroll)
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # RIGHT PANEL (~1/3) — minimal controls + metrics
+    # ------------------------------------------------------------------
     with panel_col:
-        flow = int(st.session_state.get("flow_step", 1))
-        steps_html = "".join(
-            f'<div class="qr-step'
-            f'{" active" if flow == i else ""}'
-            f'{" done" if flow > i else ""}'
-            f'"><b>{i}</b>{label}</div>'
-            for i, label in [
-                (1, "Apartment + quake"),
-                (2, "Rank evacuate areas"),
-                (3, "Calculate escape"),
-                (4, "Compare routes"),
-            ]
-        )
-        st.markdown(f'<div class="qr-steps">{steps_html}</div>', unsafe_allow_html=True)
-
-        if "howto_seen" not in st.session_state:
-            st.session_state["howto_seen"] = False
-        with st.expander(
-            "How to use Emergency Escape",
-            expanded=not st.session_state["howto_seen"],
-        ):
-            st.markdown(
-                """
-**You wake in a Manila apartment. An earthquake hits. Which evacuate area is safest and fastest?**
-
-1. Pick **your apartment** (default or a nearby preset)
-2. **Click the map** (or Random) to place the **earthquake epicenter**
-3. Read the **recommended evacuate area** among candidates you may already know
-4. Press **Find safest & fastest escape** — **cyan Hybrid** · **gold Classical** · **white dashed Dijkstra**
-5. Scrub **`t`** — watch the red quake ring expand; compare travel times
-
-*Flood / bridge / multi-citizen sims stay on Command Center (God View).*
-                """
-            )
-            if st.button("Got it — hide next time", key="howto_ack"):
-                st.session_state["howto_seen"] = True
-                st.rerun()
-
         badge = (
             f'<span class="qr-badge ok">PennyLane · {qstat["n_qubits"]}-qubit HQNN</span>'
             if pl_ok
             else '<span class="qr-badge warn">PennyLane unavailable · Classical only</span>'
         )
         st.markdown(
-            f'<div class="qr-panel"><h3>Mission</h3>{badge}'
-            "<p style='color:#9AA8BC;font-size:0.85rem;margin:0.55rem 0 0 0'>"
-            "Earthquake is the hazard. We rank known evacuate areas by "
-            "<b style='color:#fff'>safety + speed</b>, then route you with Hybrid QML."
-            "</p>"
-            f"<p style='color:#9AA8BC;font-size:0.8rem;margin:0.45rem 0 0 0'>"
-            f"<b style='color:#fff'>Map click: {st.session_state.get('select_mode', 'Epicenter')}</b> — "
-            f"{st.session_state.get('map_status', 'Click the map to place the epicenter.')}"
+            f'<div class="qr-panel"><h3>Escape</h3>{badge}'
+            "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0 0'>"
+            "For citizens and city demos: local Hybrid inference under a live quake. "
+            f"<b style='color:{HYBRID_ROUTE_COLOR}'>Cyan</b> Hybrid · "
+            f"<b style='color:{CLASSICAL_ROUTE_COLOR}'>Gold</b> Classical · "
+            f"<b style='color:{DIJKSTRA_ROUTE_COLOR}'>White</b> Dijkstra."
             "</p></div>",
             unsafe_allow_html=True,
         )
 
-        st.markdown('<div class="qr-panel"><h3>1 · Your apartment</h3></div>', unsafe_allow_html=True)
-        preset_labels = {p["id"]: p["label"] for p in APARTMENT_PRESETS}
-        preset_labels["custom"] = "Custom (map click)"
-        preset_ids = [p["id"] for p in APARTMENT_PRESETS] + (
-            ["custom"] if st.session_state.get("apartment_preset") == "custom" else []
-        )
-        cur_preset = st.session_state.get("apartment_preset", APARTMENT_PRESETS[0]["id"])
-        if cur_preset not in preset_ids:
-            preset_ids.append(cur_preset)
-            preset_labels.setdefault(cur_preset, cur_preset)
-
-        chosen = st.selectbox(
-            "Apartment / current location",
-            options=preset_ids,
-            index=preset_ids.index(cur_preset) if cur_preset in preset_ids else 0,
-            format_func=lambda i: preset_labels.get(i, i),
-            key="apartment_select",
-        )
-        if chosen != st.session_state.get("apartment_preset") and chosen != "custom":
-            preset = _apartment_preset_by_id(chosen)
-            _set_apartment(G, exits, preset["lat"], preset["lon"], preset_id=preset["id"])
-            _clear_route_results()
-            st.session_state["exit_override"] = False
-            _refresh_exit_ranking(G, exits)
-            st.session_state["map_status"] = f"Apartment set · {preset['label']}"
-            st.session_state["flow_step"] = 1
-            st.rerun()
-
-        place_mode = st.session_state.get("select_mode", "Epicenter")
-        pm1, pm2 = st.columns(2)
-        with pm1:
-            if st.button(
-                "Place apartment",
-                use_container_width=True,
-                type="primary" if place_mode == "Apartment" else "secondary",
-                help="Next map click snaps your apartment to the nearest road node.",
-            ):
-                st.session_state["select_mode"] = "Apartment"
-                st.rerun()
-        with pm2:
-            if st.button(
-                "Place epicenter",
-                use_container_width=True,
-                type="primary" if place_mode == "Epicenter" else "secondary",
-                help="Next map click sets the earthquake epicenter.",
-            ):
-                st.session_state["select_mode"] = "Epicenter"
-                st.rerun()
-
-        st.caption(st.session_state.get("map_status", ""))
-
-        st.markdown('<div class="qr-panel"><h3>2 · Earthquake</h3></div>', unsafe_allow_html=True)
+        st.markdown('<div class="qr-panel"><h3>Your location</h3></div>', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="qr-ro"><strong>Epicenter</strong><br/>'
+            f'<div class="qr-ro"><strong>Snapped</strong><br/>'
+            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
+            f' · node {st.session_state["start_node"]}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Click the map, or enter address / lat, lon below.")
+        loc_text = st.text_input(
+            "Address or lat, lon",
+            key="loc_input",
+            label_visibility="collapsed",
+            placeholder="14.5908, 120.9752  or  Fort Santiago, Intramuros",
+        )
+        if st.button("Set location", use_container_width=True, type="secondary"):
+            resolved = _resolve_location_input(loc_text)
+            if resolved is None:
+                st.warning("Could not parse location. Use lat, lon or a Manila address.")
+            else:
+                lat_r, lon_r = resolved
+                _clear_route_results()
+                _set_location(G, exits, lat_r, lon_r)
+                _refresh_exit_ranking(G, exits)
+                st.session_state["map_status"] = (
+                    f"Location → {st.session_state['loc_lat']:.5f}, "
+                    f"{st.session_state['loc_lon']:.5f}"
+                )
+                st.rerun()
+
+        st.markdown('<div class="qr-panel"><h3>Epicenter</h3></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="qr-ro"><strong>Quake</strong><br/>'
             f'{st.session_state["epi_lat"]:.5f}, {st.session_state["epi_lon"]:.5f}</div>',
             unsafe_allow_html=True,
         )
-        er1, er2 = st.columns(2)
-        with er1:
-            if st.button("Random epicenter", use_container_width=True):
-                (lon_r, lat_r), _ = random_epicenter(G)
-                _set_epicenter(lat_r, lon_r)
-                _clear_route_results()
-                st.session_state["exit_override"] = False
-                _refresh_exit_ranking(G, exits)
-                st.session_state["flow_step"] = max(st.session_state.get("flow_step", 1), 2)
-                st.session_state["map_status"] = (
-                    f"Epicenter set to {lat_r:.5f}, {lon_r:.5f}"
-                )
-                st.rerun()
-        with er2:
-            if st.button("Reset route", use_container_width=True):
-                _clear_route_results()
-                st.session_state["flow_step"] = 1
-                st.session_state["map_status"] = (
-                    "Route cleared — adjust apartment or epicenter."
-                )
-                st.rerun()
-
-        with st.expander("Advanced epicenter lat/lon", expanded=False):
-            def _on_epi_manual_change():
-                st.session_state["epi_lat"] = float(st.session_state["epi_lat_input"])
-                st.session_state["epi_lon"] = float(st.session_state["epi_lon_input"])
-                _clear_route_results()
-                st.session_state["exit_override"] = False
-                st.session_state["flow_step"] = 1
-                st.session_state["_need_rank_refresh"] = True
-
-            e1, e2 = st.columns(2)
-            with e1:
-                st.number_input(
-                    "Lat",
-                    format="%.5f",
-                    key="epi_lat_input",
-                    on_change=_on_epi_manual_change,
-                )
-            with e2:
-                st.number_input(
-                    "Lon",
-                    format="%.5f",
-                    key="epi_lon_input",
-                    on_change=_on_epi_manual_change,
-                )
-
-        if st.session_state.pop("_need_rank_refresh", False):
+        if st.button("Random epicenter", use_container_width=True, type="secondary"):
+            (lon_r, lat_r), _ = random_epicenter(G)
+            _set_epicenter(lat_r, lon_r)
+            _clear_route_results()
             _refresh_exit_ranking(G, exits)
+            st.session_state["map_status"] = f"Epicenter → {lat_r:.5f}, {lon_r:.5f}"
+            st.rerun()
 
-        ranking = st.session_state.get("exit_ranking") or _refresh_exit_ranking(G, exits)
-        st.session_state["flow_step"] = max(st.session_state.get("flow_step", 1), 2)
-
-        st.markdown(
-            '<div class="qr-panel"><h3>3 · Evacuate areas</h3>'
-            "<p style='color:#9AA8BC;font-size:0.8rem;margin:0'>"
-            "You may know these safe zones — we pick the best one for this quake."
-            "</p></div>",
-            unsafe_allow_html=True,
-        )
-
+        ranking = st.session_state.get("exit_ranking") or []
         if ranking:
             best = ranking[0]
+            t_txt = (
+                f'{best["travel_time"]:.1f}'
+                if best.get("exit_reached") and np.isfinite(best.get("travel_time", np.nan))
+                else "—"
+            )
             st.markdown(
-                f'<div class="qr-rec"><div class="title">Recommended · {best["label"]}</div>'
-                f'<div class="meta">Score {best["combined_score"]:.0f}/100 · {best["why"]}</div>'
-                f'<div class="meta" style="margin-top:0.35rem;color:#00E5FF">'
-                f'Node {best["exit_node"]} · '
-                f'{"reachable" if best["exit_reached"] else "blocked"}</div></div>',
+                f'<div class="qr-rec"><strong>Best exit · {best["label"]}</strong>'
+                f' · score {best["combined_score"]:.0f}/100 · est. {t_txt}'
+                f'<br/><span style="font-size:0.78rem">{best.get("why", "")}</span></div>',
                 unsafe_allow_html=True,
             )
-            for row in ranking:
-                cls = " best" if row.get("recommended") else ""
-                tag = " ★ BEST" if row.get("recommended") else ""
-                t_txt = (
-                    f'{row["travel_time"]:.1f}'
-                    if row["exit_reached"] and np.isfinite(row["travel_time"])
-                    else "—"
-                )
-                st.markdown(
-                    f'<div class="qr-exit-row{cls}">'
-                    f'<span>#{row["rank"]} {row["label"]}{tag}</span>'
-                    f'<span>{t_txt} · {row["safety_km"]:.2f} km · '
-                    f'{row["combined_score"]:.0f}</span></div>',
-                    unsafe_allow_html=True,
-                )
-
-            exit_choices = [r["exit_node"] for r in ranking]
-            labels = {
-                r["exit_node"]: (
-                    f'{"★ " if r.get("recommended") else ""}'
-                    f'{r["label"]} · score {r["combined_score"]:.0f}'
-                )
-                for r in ranking
-            }
-            dest_idx = (
-                exit_choices.index(st.session_state["dest_node"])
-                if st.session_state["dest_node"] in exit_choices
-                else 0
-            )
-            picked = st.selectbox(
-                "Evacuate area (override)",
-                options=exit_choices,
-                index=dest_idx,
-                format_func=lambda n: labels.get(n, str(n)),
-                help="Default is the recommended area. Override if you prefer another known exit.",
-            )
-            if picked != st.session_state["dest_node"]:
-                st.session_state["dest_node"] = picked
-                rec = st.session_state.get("recommended_exit")
-                st.session_state["exit_override"] = bool(rec is not None and picked != rec)
-                _clear_route_results()
-                st.session_state["map_status"] = f"Evacuate area set → node {picked}"
-                st.rerun()
         else:
-            st.warning("No evacuate areas available on this graph.")
+            st.caption("Best exit will appear after location + epicenter are set.")
 
-        st.markdown('<div class="qr-panel"><h3>4 · Escape engine</h3></div>', unsafe_allow_html=True)
-        if pl_ok:
-            st.caption("Hero: Hybrid QML (PennyLane PHN). Overlays optional.")
-        else:
+        if not pl_ok:
             st.caption(qstat["note"])
 
-        compare_classical = st.checkbox(
-            "Show Classical FiLM (gold)",
-            value=True,
-            key="b2c_cmp_classical",
-        )
-        compare_dij = st.checkbox(
-            "Show Dijkstra (white dashed)",
-            value=True,
-            key="b2c_cmp_dij",
-        )
-
-        run = st.button(
-            "Find safest & fastest escape",
-            type="primary",
-            use_container_width=True,
-        )
-        if st.session_state.pop("pending_calculate", False):
-            run = True
+        run = st.button("Find route", type="primary", use_container_width=True)
         st.caption(
-            f"Manila graph · {G.number_of_nodes()} nodes · {G.number_of_edges()} edges"
+            f"{G.number_of_nodes()} nodes · {G.number_of_edges()} edges · "
+            f"{st.session_state.get('map_status', '')}"
         )
 
-        # ---- Calculate (results stored; metrics rendered below in panel) ----
         start = st.session_state["start_node"]
         dest = st.session_state["dest_node"]
         epi_lat = float(st.session_state["epi_lat"])
         epi_lon = float(st.session_state["epi_lon"])
 
         if run:
-            st.session_state["flow_step"] = 3
             use_hybrid = bool(pl_ok)
             hybrid_fell_back = False
             try:
-                with st.spinner("Ranking locked · running Hybrid · Classical · Dijkstra…"):
+                with st.spinner("Routing Hybrid · Classical · Dijkstra…"):
                     hybrid_model = None
                     mean = std = None
                     if use_hybrid:
@@ -1182,8 +730,8 @@ def main():
                             use_hybrid = False
                             st.warning(
                                 "Hybrid QML runtime glitch "
-                                f"({type(hybrid_exc).__name__}: {hybrid_exc}). "
-                                "Falling back to Classical FiLM as hero."
+                                f"({type(hybrid_exc).__name__}). "
+                                "Falling back to Classical FiLM."
                             )
 
                     classical_model, c_mean, c_std = get_classical_model()
@@ -1200,14 +748,14 @@ def main():
                     cmp = compare_three_way(
                         G,
                         hero_model,
-                        classical_model if compare_classical else None,
+                        classical_model,
                         mean,
                         std,
                         start,
                         dest,
                         (epi_lon, epi_lat),
-                        include_classical=bool(compare_classical),
-                        include_dijkstra=bool(compare_dij),
+                        include_classical=True,
+                        include_dijkstra=True,
                     )
 
                     h = cmp["hybrid"]
@@ -1220,7 +768,7 @@ def main():
 
                     if not path or len(path) < 2:
                         raise RuntimeError(
-                            "No escape hops found — try another epicenter or apartment."
+                            "No escape hops found — try another location or epicenter."
                         )
 
                     classical_path = None
@@ -1228,7 +776,7 @@ def main():
                     classical_meta = {}
                     classical_reached = False
                     classical_accuracy = 0.0
-                    if compare_classical and cmp.get("classical"):
+                    if cmp.get("classical"):
                         c = cmp["classical"]
                         classical_path = c["path"]
                         classical_travel = float(c["travel_time"])
@@ -1240,7 +788,7 @@ def main():
 
                     dij_path, dij_travel = (None, 0.0)
                     dij_reached = False
-                    if compare_dij and cmp.get("dijkstra"):
+                    if cmp.get("dijkstra"):
                         d = cmp["dijkstra"]
                         dij_path = d["path"]
                         dij_travel = float(d["travel_time"])
@@ -1270,8 +818,8 @@ def main():
                     st.session_state.update(
                         {
                             "path": path,
-                            "classical_path": classical_path if compare_classical else None,
-                            "dij_path": dij_path if compare_dij else None,
+                            "classical_path": classical_path,
+                            "dij_path": dij_path,
                             "radii_trace": radii_trace,
                             "qml_travel": qml_travel,
                             "classical_travel": classical_travel,
@@ -1288,8 +836,6 @@ def main():
                             "dij_reached": dij_reached,
                             "compare_narrative": cmp.get("narrative") or {},
                             "latency_ms": cmp.get("latency_ms") or {},
-                            "show_classical_overlay": bool(compare_classical),
-                            "show_dijkstra_overlay": bool(compare_dij),
                             "demo_hybrid": bool(
                                 getattr(hero_model, "demo_mode", False)
                                 and use_hybrid
@@ -1299,14 +845,10 @@ def main():
                             "epi": (epi_lon, epi_lat),
                             "start": start,
                             "dest": dest,
-                            "flow_step": 4,
                         }
                     )
                     try:
-                        st.toast(
-                            "Escape ready — scrub t · compare Hybrid / Classical / Dijkstra.",
-                            icon="✅",
-                        )
+                        st.toast("Route ready — compare Hybrid / Classical / Dijkstra.", icon="✅")
                     except Exception:
                         pass
             except Exception as e:
@@ -1314,12 +856,11 @@ def main():
                 hint = ""
                 if "numpy" in detail.lower():
                     hint = (
-                        " Hint: Streamlit Cloud needs `numpy==1.26.4` listed before "
+                        " Hint: Streamlit Cloud needs `numpy==1.26.4` before "
                         "`torch==2.2.2` in requirements.txt."
                     )
                 st.error(f"Route calculation failed: {e}.{hint}")
 
-        # ---- Metrics (right panel) ----
         path = st.session_state.get("path")
         if path:
             qml_travel = float(st.session_state.get("qml_travel", 0.0))
@@ -1362,10 +903,8 @@ def main():
             if narrative.get("hybrid_near_dijkstra") is not None:
                 near_dij = bool(narrative["hybrid_near_dijkstra"])
 
-            st.markdown(
-                '<div class="qr-panel"><h3>5 · Escape metrics</h3></div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="qr-panel"><h3>Metrics</h3></div>', unsafe_allow_html=True)
+
             radii_for_scrub = st.session_state.get("radii_trace")
             if radii_for_scrub and path and len(path) >= 2:
                 max_t = max(0, len(radii_for_scrub) - 1)
@@ -1373,20 +912,18 @@ def main():
                 if prev_t > max_t or "hazard_t_scrub" not in st.session_state:
                     st.session_state["hazard_t_scrub"] = max_t
                 t_scrub = st.slider(
-                    "Scrub hazard time  t",
+                    "Hazard time t",
                     0,
                     max_t,
                     key="hazard_t_scrub",
-                    help="Expanding earthquake (red) and exit congestion (gold).",
                 )
-                st.session_state["flow_step"] = max(st.session_state.get("flow_step", 4), 4)
                 st.session_state["_step_reveal"] = min(int(t_scrub) + 1, len(path) - 1)
             else:
                 st.session_state.pop("_step_reveal", None)
 
             win = " win" if beats_classical or (reached and is_hybrid) else ""
             st.markdown(
-                f'<div class="qr-card hybrid{win}" style="margin-bottom:0.45rem">'
+                f'<div class="qr-card hybrid{win}">'
                 f'<span class="qr-hero-pill">HERO</span>'
                 f'<div class="label">Hybrid travel</div>'
                 f'<div class="value accent">{qml_travel:.1f}</div>'
@@ -1404,10 +941,10 @@ def main():
                 else "—"
             )
             st.markdown(
-                f'<div class="qr-card classical" style="margin-bottom:0.45rem">'
+                f'<div class="qr-card classical">'
                 f'<div class="label">Classical · Dijkstra</div>'
-                f'<div class="value gold" style="font-size:1.45rem">{c_val}'
-                f' <span style="color:#9AA8BC;font-size:0.9rem">/</span> '
+                f'<div class="value gold" style="font-size:1.35rem">{c_val}'
+                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
                 f'<span class="dij">{d_val}</span></div>'
                 f'<div class="sub">Gold ablation · white dashed oracle</div></div>',
                 unsafe_allow_html=True,
@@ -1419,11 +956,11 @@ def main():
                 else ("N/A" if is_hybrid else "—")
             )
             st.markdown(
-                f'<div class="qr-card" style="margin-bottom:0.45rem">'
-                f'<div class="label">Exit · quality · quantum</div>'
-                f'<div class="value" style="font-size:1.25rem">'
+                f'<div class="qr-card">'
+                f'<div class="label">Exit · overlap · quantum</div>'
+                f'<div class="value" style="font-size:1.2rem">'
                 f'{"YES" if reached else "NO"} · {accuracy:.0f}% · {q_val}</div>'
-                f'<div class="sub">Reached · overlap vs Dijkstra · PHN contrib</div></div>',
+                f'<div class="sub">Reached · vs Dijkstra · PHN contrib</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1443,7 +980,7 @@ def main():
             st.markdown(
                 f'<div class="qr-card{" win" if beats_classical or near_dij else ""}">'
                 f'<div class="label">Verdict</div>'
-                f'<div class="value" style="font-size:1.15rem">{story}</div></div>',
+                f'<div class="value" style="font-size:1.05rem">{story}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1459,7 +996,7 @@ def main():
                     f"{_ms(latency.get('dijkstra'))}"
                 )
 
-            with st.expander("What is Quantum Contribution?", expanded=False):
+            with st.expander("Quantum Contribution", expanded=False):
                 q_line = (
                     f"≈ **{q_contrib:.1f}%** this run"
                     if q_contrib is not None and q_contrib > 0
@@ -1469,8 +1006,6 @@ def main():
                     f"""
 **Live from Hybrid checkpoint** ({q_line}).
 
-`W = model.combine.weight` · classical cols 0–4 · quantum cols 5–9
-
 ```
 Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
 ```
@@ -1479,22 +1014,19 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                     """
                 )
         else:
-            st.info(
-                "Set apartment + epicenter, review the recommended evacuate area, "
-                "then press **Find safest & fastest escape**."
-            )
+            st.info("Set location · random epicenter · **Find route**.")
 
         st.markdown(
-            '<div class="qr-footer" style="display:block !important;margin-top:0.75rem">'
-            "<span>Team 5 — Quantrio · QC4SG — SEA Quantathon 2026</span><br/>"
-            "<span>B2C Emergency Escape · 2D Folium · Quantum Intelligence. Human Relief.</span>"
+            '<div class="qr-footer">'
+            "Team 5 — Quantrio · QC4SG SEA Quantathon 2026<br/>"
+            "B2G2C Escape · Folium 2D · Quantum Intelligence. Human Relief."
             "</div>",
             unsafe_allow_html=True,
         )
 
-    # ==================================================================
-    # LEFT MAP (~2/3) — Folium 2D only (no vertical scroll; fills column)
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # LEFT MAP (~2/3) — Folium only (no wrap div)
+    # ------------------------------------------------------------------
     with map_col:
         path = st.session_state.get("path")
         classical_path = st.session_state.get("classical_path")
@@ -1511,9 +1043,6 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             t_show = max(0, len(radii_trace) - 1)
             step_reveal = min(t_show + 1, len(path) - 1)
 
-        # Do not wrap Folium in a markdown <div>: Streamlit emits separate
-        # element-containers, so an open wrap never parents the iframe and
-        # often becomes an empty dark box (black "map") while clipping the real iframe.
         m = build_base_map(
             G,
             exits,
@@ -1521,10 +1050,9 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             int(st.session_state.get("map_zoom", 16)),
         )
 
-        # Highlight recommended / ranked evacuate areas
         for row in ranking:
             color = HYBRID_ROUTE_COLOR if row.get("recommended") else ORANGE_ACCENT
-            radius = 11 if row.get("recommended") else 8
+            radius = 11 if row.get("recommended") else 7
             marker = folium.CircleMarker(
                 location=[row["lat"], row["lon"]],
                 radius=radius,
@@ -1532,10 +1060,6 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 fill=True,
                 fill_color=color,
                 fill_opacity=0.9,
-                popup=(
-                    f'{row["label"]} · rank {row["rank"]} · '
-                    f'score {row["combined_score"]:.0f}'
-                ),
             )
             _no_click(marker).add_to(m)
 
@@ -1592,57 +1116,58 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
 
         route_label = st.session_state.get("model_used", "Hybrid QML (HQNN)")
         if st.session_state.get("is_hybrid_route", "Hybrid" in str(route_label)):
-            route_label = "Hybrid QML · HQNN (quantum-classical PHN)"
+            route_label = "Hybrid QML · HQNN"
 
         if dij_path and len(dij_path) >= 2:
             coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
-            dij_line = folium.PolyLine(
-                coords_d,
-                color=DIJKSTRA_ROUTE_COLOR,
-                weight=3,
-                opacity=0.75,
-                dash_array="8 10",
-                popup="Dijkstra · full dynamic weights",
-            )
-            _no_click(dij_line).add_to(m)
+            _no_click(
+                folium.PolyLine(
+                    coords_d,
+                    color=DIJKSTRA_ROUTE_COLOR,
+                    weight=3,
+                    opacity=0.75,
+                    dash_array="8 10",
+                )
+            ).add_to(m)
 
         if classical_path and len(classical_path) >= 2:
             coords_c = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path]
-            class_line = folium.PolyLine(
-                coords_c,
-                color=CLASSICAL_ROUTE_COLOR,
-                weight=4,
-                opacity=0.88,
-                popup="Classical FiLM (ablation)",
-            )
-            _no_click(class_line).add_to(m)
+            _no_click(
+                folium.PolyLine(
+                    coords_c,
+                    color=CLASSICAL_ROUTE_COLOR,
+                    weight=4,
+                    opacity=0.88,
+                )
+            ).add_to(m)
 
         if path and len(path) >= 2:
             end_i = step_reveal if step_reveal is not None else len(path) - 1
             partial = path[: end_i + 1]
             coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
-            route = folium.PolyLine(
-                coords,
-                color=HYBRID_ROUTE_COLOR,
-                weight=6,
-                opacity=0.95,
-                popup=f"{route_label} escape route",
-            )
-            _no_click(route).add_to(m)
-            for n in partial:
-                dot = folium.CircleMarker(
-                    [G.nodes[n]["y"], G.nodes[n]["x"]],
-                    radius=4,
+            _no_click(
+                folium.PolyLine(
+                    coords,
                     color=HYBRID_ROUTE_COLOR,
-                    fill=True,
-                    fill_opacity=0.95,
+                    weight=6,
+                    opacity=0.95,
                 )
-                _no_click(dot).add_to(m)
+            ).add_to(m)
+            for n in partial:
+                _no_click(
+                    folium.CircleMarker(
+                        [G.nodes[n]["y"], G.nodes[n]["x"]],
+                        radius=4,
+                        color=HYBRID_ROUTE_COLOR,
+                        fill=True,
+                        fill_opacity=0.95,
+                    )
+                ).add_to(m)
 
         map_data = st_folium(
             m,
-            key="qr_map_b2c",
-            height=_B2C_MAP_H,
+            key="qr_map_escape",
+            height=MAP_H,
             use_container_width=True,
             returned_objects=["last_clicked"],
             center=st.session_state["map_center"],

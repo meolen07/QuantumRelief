@@ -6,12 +6,14 @@ Cloud: https://quantumrelief.streamlit.app
 
 **Tagline:** Hybrid delivers near-Dijkstra quality with quantum-classical local inference.
 
+**Demo surface:** Escape-only **B2G2C** (Folium 2D). God View is **not** in the UI (`src/god_view.py` kept unused).
+
 Use this if `git push` fails (auth). Upload the files below via GitHub web UI or a machine with credentials.
 
 ## Demo commands
 
 ```bash
-# Streamlit Crisis UX (Hybrid QML hero + 3-way compare)
+# Streamlit Escape UX (Hybrid QML hero + 3-way compare)
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
@@ -33,7 +35,8 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 | Hybrid beats Classical | **91.7%** of trials |
 | Hybrid near Dijkstra | **95.8%** of trials |
 | Path overlap vs Dijkstra | Hybrid **71.4%** · Classical **64.3%** |
-| Crisis UX | Green Hybrid · Cyan Classical · Dashed Dijkstra |
+| Crisis UX | Cyan Hybrid · Gold Classical · Dashed Dijkstra |
+| UI | Escape-only B2G2C · no God View · no apartment presets |
 | API `POST /api/v1/calculate_route` | Hybrid + optional `classical` / `dijkstra` |
 | `runtime.txt` | `python-3.11` |
 
@@ -69,6 +72,8 @@ src/dataset_generation.py
 src/film_model.py
 src/quantum_hybrid.py
 src/routing_service.py
+src/god_view.py
+src/safety_loss.py
 scripts/retrain_models.py
 scripts/generate_pitch_deck.py
 models/film_classical.pt
@@ -96,13 +101,12 @@ models/*_partial.pt
 
 ## Judge demo script (60s)
 
-1. Open Streamlit → **B2C Emergency Escape**
-2. Pick apartment (or keep default) → click map / **Random epicenter**
-3. Show **recommended evacuate area** ranking in the right panel
-4. Keep Classical + Dijkstra overlays **ON** → **Find safest & fastest escape**
+1. Open Streamlit → **Escape** (only surface)
+2. **Click map** (or enter lat/lon) for your location → **Random epicenter**
+3. Show **Best exit** one-liner (auto-recommended)
+4. Press **Find route** → cyan Hybrid · gold Classical · white dashed Dijkstra
 5. Scrub `t`; read Hybrid / Classical / Dijkstra travel times + Quantum Contribution
 6. Story: Hybrid beats Classical; Hybrid approaches Dijkstra with local inference only
-7. Optional: switch to **Command Center (God View)** for multi-citizen / flood-bridge  
 
 ## Retrain (optional)
 

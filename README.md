@@ -17,38 +17,37 @@ Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)*
 
 ## Overview
 
-QuantumRelief predicts **next-hop emergency escape routes** on the Manila **Intramuros** road network under expanding earthquake and exit-traffic hazards. A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline.
+QuantumRelief is a **B2G2C Escape-only** demo: emergency escape routing on the Manila **Intramuros** road network under expanding earthquake and exit-traffic hazards. A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline.
 
 Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](https://arxiv.org/abs/2307.15682)* (Furubira → Manila).
 
-**Two surfaces**
+**One surface**
 
 | Surface | Audience | Role |
 | --- | --- | --- |
-| **B2C Emergency Escape** | Citizens | Map-click Start / Epicenter / Exit → 3-way Hybrid · Classical · Dijkstra |
-| **Command Center (God View)** | B2G commanders | City-wide evacuation: flood / bridge hazards, arterial heatmap |
+| **Escape** | Citizens + gov demos (B2G2C) | Your location → random epicenter → auto-best exit → Hybrid · Classical · Dijkstra |
 
-God View is honest about scale: **Dijkstra handles bulk routing**; Hybrid QML runs on **≤4 hero corridors**. “Scaled citizens” (`batch × 1,428`) is a pitch narrative (~14k at batch 10), not 14k Hybrid inferences.
+`src/god_view.py` remains in-repo for optional command-center experiments but is **not** wired into the Streamlit UI.
 
-**UI palette (Lovable-aligned):** deep navy · **cyan** Hybrid · **gold** Classical · orange accents · **red** hazard · white/light dashed Dijkstra.
+**UI palette:** deep navy · **cyan** Hybrid · **gold** Classical · orange accents · **red** hazard · white/light dashed Dijkstra.
 
 ---
 
 ## Results (latest hard retrain)
 
-From `data/retrain_report.json` — `hard=true`, **~18,932** samples, **hazard×2**, 1000 episodes, 24 route trials.
+From `data/retrain_report.json` — reused **~18,932** hard samples, Hybrid Phase A/B **20+8** on **6500** (hard-seed oversampled), fair eval **28** trials (hard_seeds + random).
 
 | Metric | Hybrid | Classical | Dijkstra |
 | --- | --- | --- | --- |
-| Val accuracy | ≈ **0.890** | ≈ **0.886** | — |
-| Mean travel time | ≈ **10.37** | ≈ **9.83** | ≈ **9.98** |
+| Val accuracy | ≈ **0.899** | ≈ **0.886** | — |
+| Mean travel time | ≈ **12.03** | ≈ **11.98** | ≈ **12.17** |
 | Exit reached | **100%** | **100%** | **100%** |
-| Path overlap vs Dijkstra | ≈ **57.4%** | ≈ **63.5%** | — |
-| Quantum contribution | ≈ **41.7%** | — | — |
+| Path overlap vs Dijkstra | ≈ **54.1%** | ≈ **55.8%** | — |
+| Quantum contribution | ≈ **82.4%** | — | — |
 
-Hybrid beats Classical on ≈ **83.3%** of trials and stays near Dijkstra on ≈ **83.3%**. Checkpoints: `film_hybrid.pt`, `film_classical.pt`.
+Hybrid travel wins ≈ **71.4%** of trials and stays near Dijkstra on ≈ **89.3%**. Mean travel is within **~0.05** of Classical (near parity; Classical still slightly ahead on mean + overlap). Checkpoints: `film_hybrid.pt`, `film_classical.pt`.
 
-### Quantum Contribution (≈41.7%)
+### Quantum Contribution (≈82.4%)
 
 Live metric from `HybridFiLMNetwork.combine` (`Linear(10→5)`):
 
@@ -63,7 +62,7 @@ Implemented in `src/quantum_hybrid.py` → `estimate_quantum_contribution_pct`.
 
 ### Latency note
 
-On Calculate, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex operators; Classical FiLM remains the production fallback.
+On **Find route**, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex operators; Classical FiLM remains the production fallback.
 
 ### Quantum Advantage stress scenarios
 
@@ -73,8 +72,6 @@ Hard start / epicenter / exit pairs live in `data/demo_scenarios.json`. Regenera
 python -u scripts/find_advantage_scenarios.py 60 5 42
 ```
 
-Streamlit sidebar: **Load Quantum Advantage scenario** → auto-runs 3-way compare.
-
 ---
 
 ## Key features
@@ -83,10 +80,11 @@ Streamlit sidebar: **Load Quantum Advantage scenario** → auto-runs 3-way compa
 - **Classical FiLM ablation** — **gold** overlay (same FiLM, no quantum branch)
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
 - **3-way metrics** — travel time, exit reached, path overlap, quantum contribution, latency (ms)
-- **Quantum Advantage scenarios** — curated hard cases in the Streamlit sidebar
+- **Auto-best exit** — silent ranking; one recommended-exit line in the panel
+- **Location** — Folium map click **or** address / lat-lon input, snapped to nearest graph node
+- **Epicenter** — **Random epicenter** only
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
-- **B2C Emergency Escape** — Folium map-click Start / Epicenter / Exit
-- **Command Center (God View)** — Dijkstra bulk + ≤4 Hybrid heroes; scaled-citizens narrative
+- **B2G2C Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel
 - **B2B API** — FastAPI `/api/v1/calculate_route` with optional Classical / Dijkstra fields
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 
@@ -96,57 +94,34 @@ Streamlit sidebar: **Load Quantum Advantage scenario** → auto-runs 3-way compa
 
 ```mermaid
 flowchart LR
-  UX[Streamlit B2C + God View] --> RS[routing_service]
+  UX[Streamlit Escape B2G2C] --> RS[routing_service]
   API[FastAPI B2B API] --> RS
-  RS --> G[OSMnx / NetworkX graph]
-  RS --> Dyn[Dynamic weights]
-  RS --> HQ[Hybrid FiLM PHN]
-  HQ --> PL[PennyLane]
-  RS --> CF[Classical FiLM]
-  RS --> DJ[Dijkstra oracle]
+  RS --> H[Hybrid QML FiLM]
+  RS --> C[Classical FiLM]
+  RS --> D[Dijkstra oracle]
+  H --> PL[PennyLane PHN]
+  RS --> G[Intramuros GraphML]
 ```
-
-| Paper (Furubira) | QuantumRelief (Manila) |
-| --- | --- |
-| OSMnx city graph | Intramuros bbox, degree-capped, cached GraphML |
-| 3 exits + random epicenter | Perimeter exits + map-click epicenter |
-| Algorithm 1 dynamic weights | `src/dynamic_simulation.py` |
-| Table I input size 36 | Same layout, local km projection |
-| Classical + Quantum FiLM PHN | Classical ablation + **Hybrid QML hero** + Dijkstra baseline |
-
-Radii: \(r_{epi} = 0.5 + \sqrt{0.0002\, t}\), \(r_{exit} = \sqrt{0.00075\, t}\). Hard training uses `hazard_intensity=2.0`.
-
-Neighbor logits are masked to real degree; near-ties break toward the live Dijkstra next hop; a light Dijkstra assist may finish a stalled path — branding remains **Hybrid QML**. Travel times are honest path sums (never forged).
 
 ---
 
-## Quick start — Streamlit
+## Quick start
 
 ```bash
-cd QuantumRelief
-python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM download runs only if the GraphML cache is missing.
-
----
-
-## Quantum Routing API — FastAPI
+Optional API:
 
 ```bash
-source .venv/bin/activate
-pip install -r requirements.txt
 pip install -r requirements-api.txt
-uvicorn api:app --reload --host 0.0.0.0 --port 8000
+uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
 ```bash
-curl -s http://127.0.0.1:8000/
-
-curl -s -X POST http://127.0.0.1:8000/api/v1/calculate_route \
+curl -s http://127.0.0.1:8000/api/v1/calculate_route \
   -H "Content-Type: application/json" \
   -d '{
     "start_coords": [14.5895, 120.9750],
@@ -158,33 +133,20 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/calculate_route \
 
 OpenAPI docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
----
-
-## How to use — B2C Emergency Escape
-
-1. Top radio: **B2C Emergency Escape**
-2. Sidebar: set click mode **Start → Epicenter → Exit** *(or load a Quantum Advantage scenario)*
-3. **Click the Folium map** (Start/Exit snap to nearest road node)
-4. Keep comparison overlays ON (**cyan** Hybrid · **gold** Classical · **dashed** Dijkstra)
-5. Press **Calculate Escape Route**
-6. Scrub simulation time **`t`** — red \(r_{epi}\) / gold \(r_{exit}\) expand
-7. Read the **3-way dashboard**: travel times, quantum contribution, latency (ms)
-
-In-app: expander **How to use QuantumRelief**, **What is Quantum Contribution?**
+Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM download runs only if the GraphML cache is missing.
 
 ---
 
-## How to use — Command Center (God View)
+## How to use — Escape (B2G2C)
 
-1. Switch the top radio to **Command Center (God View)**
-2. Sidebar: set **Flood / sector hazard**, optionally **Block Main Highway Bridge**
-3. Keep batch at **8–10** (max 20). Hybrid QML runs only on ≤**4** hero agents; the rest is Dijkstra bulk
-4. Optionally sync the **B2C epicenter**, or enter lat/lon manually
-5. Click **Trigger City-Wide Evacuation Simulation** (does **not** auto-run on tab open)
-6. Read metrics: **Simulated agents**, **Scaled citizens (narrative)**, escape success %, quantum contribution, congestion alert, batch latency
-7. Map: **cyan** = Hybrid hero arterials · **light** = Dijkstra bulk · **red** = danger / blocked bridge
+1. **Click the map** (or enter address / `lat, lon`) to set your location — snapped to the nearest road node
+2. Press **Random epicenter**
+3. Read the **Best exit** line (auto-recommended)
+4. Press **Find route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
+5. Scrub hazard time **`t`** — red \(r_{epi}\) / gold \(r_{exit}\) expand
+6. Read right-panel **3-way metrics**: travel times, quantum contribution, latency
 
-**Honest architecture:** Scaled citizens = `batch × 1,428` for pitch narrative. Only the small Hybrid sample runs QML; bulk fleet routing is Dijkstra on the hazard-weighted graph.
+Layout: left **~2/3** Folium map (fixed) · right **~1/3** scrollable controls + metrics.
 
 ---
 
@@ -195,7 +157,7 @@ QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
   requirements-api.txt     # FastAPI + uvicorn
-  app.py                   # B2C Emergency Escape + Command Center (God View)
+  app.py                   # B2G2C Escape-only (Folium 2D)
   api.py                   # B2B Quantum Routing API
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
                            # + demo_scenarios.json + hard_seeds.json
@@ -205,9 +167,10 @@ QuantumRelief/
     dynamic_simulation.py  # Algorithm 1 weights
     dataset_generation.py  # Table I vectors + Dijkstra labels
     film_model.py          # Classical FiLM
+    safety_loss.py         # Safety aux loss (λ_safe · L_safe)
     quantum_hybrid.py      # PennyLane Hybrid PHN (+ quantum contribution %)
     routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
-    god_view.py            # God View (Dijkstra bulk + Hybrid hero sample)
+    god_view.py            # Unused by app (optional command-center experiments)
   scripts/
     retrain_models.py
     find_advantage_scenarios.py
@@ -232,16 +195,21 @@ QuantumRelief/
 
 ```bash
 source .venv/bin/activate
-# Full hard train (defaults: 1000 episodes, hazard×2, oversample 8×)
+# Hybrid push on existing hard dataset (~18.9k):
+caffeinate -dimsu python -u scripts/retrain_models.py --hard --reuse-dataset \
+  --skip-classical --hybrid-a 20 --hybrid-b 8 --hybrid-max-samples 6500 \
+  --hard-repeats 6 --eval-trials 28 --lambda-safe 0.35
+# Full regen + Classical + Hybrid:
 caffeinate -dimsu python -u scripts/retrain_models.py --hard --episodes 1000 \
-  --classical-epochs 100 --hybrid-a 10 --hybrid-b 6 --hybrid-max-samples 3500
+  --classical-epochs 100 --hybrid-a 20 --hybrid-b 8 --hybrid-max-samples 6500 \
+  --lambda-safe 0.35
 # Dataset only:
 python -u scripts/retrain_models.py --hard --episodes 1000 --dataset-only
 # Or via module:
 python -u -m src.dataset_generation --episodes 1000 --hard
 ```
 
-Hard mode widens earthquake/traffic radii (`hazard_intensity=2.0`) and oversamples seeds from `data/hard_seeds.json` (synced from `demo_scenarios.json` / `find_advantage_scenarios.py`) 8× mixed with random episodes.
+Hard mode widens earthquake/traffic radii (`hazard_intensity=2.0`) and oversamples seeds from `data/hard_seeds.json` (synced from `demo_scenarios.json` / `find_advantage_scenarios.py`) 8× mixed with random episodes. Hybrid subset additionally oversamples hard-seed trajectories at intensity 1.0 + 2.0.
 
 **Smoke checks:**
 
