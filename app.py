@@ -363,7 +363,13 @@ st.markdown(
       overflow: hidden;
       border: 1px solid rgba(154,168,188,0.14);
       box-shadow: 0 12px 36px rgba(0,0,0,0.35);
-      height: 100%;
+    }
+    /* Folium iframe chrome (applied to the iframe parent, not a fake wrap div) */
+    iframe[title*="streamlit_folium"],
+    iframe[title*="folium"] {
+      border-radius: 16px;
+      border: 1px solid rgba(154,168,188,0.14) !important;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.35);
     }
     /* Top-level surface switcher */
     div[data-testid="stRadio"] > div {
@@ -803,92 +809,74 @@ def main():
 
     # ---------- B2C Emergency Escape: 2/3 map · 1/3 controls ----------
     # Layout CSS is B2C-branch-only (God View returns above → normal scroll + sidebar).
+    # Soft layout: do NOT lock html/body/.stApp with overflow:hidden — that collapses
+    # Folium/Leaflet (black map) and can prevent the right column from scrolling.
+    _B2C_MAP_H = 820  # concrete px; must match st_folium height below
     st.markdown(
-        """
+        f"""
         <style>
-        /* B2C: fixed map column · independently scrolling controls panel */
+        /* B2C: map column fills · controls panel scrolls independently */
         [data-testid="stSidebar"],
-        [data-testid="stSidebarCollapsedControl"] {
+        [data-testid="stSidebarCollapsedControl"] {{
           display: none !important;
-        }
-        .qr-brand { font-size: 1.55rem !important; }
-        .qr-tagline { font-size: 0.95rem !important; margin: 0.05rem 0 !important; }
+        }}
+        .qr-brand {{ font-size: 1.55rem !important; }}
+        .qr-tagline {{ font-size: 0.95rem !important; margin: 0.05rem 0 !important; }}
         .qr-tag,
         .qr-team,
-        .qr-top-legend {
+        .qr-top-legend {{
           display: none !important;
-        }
-        html, body {
-          overflow: hidden !important;
-          height: 100% !important;
-        }
-        .stApp {
-          overflow: hidden !important;
-          height: 100vh !important;
-          max-height: 100vh !important;
-        }
-        [data-testid="stAppViewContainer"],
-        [data-testid="stAppViewContainer"] > .main,
-        section.main {
-          overflow: hidden !important;
-          height: 100vh !important;
-          max-height: 100vh !important;
-        }
-        section.main .block-container {
+        }}
+        section.main .block-container {{
           padding-top: 0.35rem !important;
-          padding-bottom: 0.25rem !important;
+          padding-bottom: 0.35rem !important;
           padding-left: 0.75rem !important;
           padding-right: 0.75rem !important;
           max-width: 100% !important;
-          max-height: 100vh !important;
-          overflow: hidden !important;
-        }
-        /* Map | panel row under compact header + surface radio */
+        }}
+        /* Map | panel row: constrain height so right col can scroll */
         div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"]),
-        div[data-testid="stHorizontalBlock"]:has(.qr-map-wrap),
-        div[data-testid="stHorizontalBlock"]:has(iframe) {
-          height: calc(100vh - 7.25rem) !important;
-          max-height: calc(100vh - 7.25rem) !important;
-          align-items: stretch !important;
-          overflow: hidden !important;
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"]) {{
+          align-items: flex-start !important;
           gap: 0.65rem !important;
-        }
-        /* Left 2/3 — map only, no vertical scroll */
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) {
-          overflow: hidden !important;
-          max-height: 100% !important;
-          height: 100% !important;
-        }
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) > div {
-          overflow: hidden !important;
-          height: 100% !important;
-          max-height: 100% !important;
-        }
-        /* Right 1/3 — controls + metrics scroll independently */
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(2) {
-          overflow-y: auto !important;
+          max-height: min(calc(100vh - 6.5rem), {_B2C_MAP_H + 24}px) !important;
+        }}
+        /* Left 2/3 — show Folium at fixed pixel height (no % height chain) */
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+          > div[data-testid="column"]:nth-child(1),
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+          > div[data-testid="column"]:nth-child(1) {{
+          overflow: visible !important;
+        }}
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+          > div[data-testid="column"]:nth-child(1) iframe,
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+          > div[data-testid="column"]:nth-child(1) iframe {{
+          height: {_B2C_MAP_H}px !important;
+          min-height: {_B2C_MAP_H}px !important;
+          max-height: {_B2C_MAP_H}px !important;
+          width: 100% !important;
+        }}
+        /* Right 1/3 — independent scroll (concrete max-height, not % of hidden parents) */
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+          > div[data-testid="column"]:nth-child(2),
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+          > div[data-testid="column"]:nth-child(2) {{
           overflow-x: hidden !important;
-          max-height: 100% !important;
-          height: 100% !important;
-          padding-right: 0.25rem;
-        }
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(2) > div {
+          overflow-y: auto !important;
+          max-height: {_B2C_MAP_H}px !important;
+          height: {_B2C_MAP_H}px !important;
+          padding-right: 0.35rem;
+          overscroll-behavior: contain;
+        }}
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="folium"])
+          > div[data-testid="column"]:nth-child(2) > div,
+        div[data-testid="stHorizontalBlock"]:has(iframe[title*="streamlit_folium"])
+          > div[data-testid="column"]:nth-child(2) > div {{
           max-height: none !important;
-        }
-        .qr-map-wrap,
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1) iframe {
-          height: calc(100vh - 7.25rem) !important;
-          min-height: calc(100vh - 7.25rem) !important;
-          max-height: calc(100vh - 7.25rem) !important;
-          border: none !important;
-        }
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1)
-          [data-testid="stVerticalBlockBorderWrapper"],
-        div[data-testid="stHorizontalBlock"]:has(iframe) > div[data-testid="column"]:nth-child(1)
-          [data-testid="element-container"] {
-          height: 100% !important;
-          max-height: 100% !important;
-        }
+          height: auto !important;
+          overflow: visible !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1523,7 +1511,9 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             t_show = max(0, len(radii_trace) - 1)
             step_reveal = min(t_show + 1, len(path) - 1)
 
-        st.markdown('<div class="qr-map-wrap">', unsafe_allow_html=True)
+        # Do not wrap Folium in a markdown <div>: Streamlit emits separate
+        # element-containers, so an open wrap never parents the iframe and
+        # often becomes an empty dark box (black "map") while clipping the real iframe.
         m = build_base_map(
             G,
             exits,
@@ -1652,13 +1642,12 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         map_data = st_folium(
             m,
             key="qr_map_b2c",
-            height=900,
+            height=_B2C_MAP_H,
             use_container_width=True,
             returned_objects=["last_clicked"],
             center=st.session_state["map_center"],
             zoom=int(st.session_state.get("map_zoom", 16)),
         )
-        st.markdown("</div>", unsafe_allow_html=True)
 
         if map_data and map_data.get("last_clicked"):
             click = map_data["last_clicked"]
