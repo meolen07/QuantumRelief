@@ -362,6 +362,88 @@ def path_length_km(G: nx.Graph, path: Sequence, origin=None) -> float:
     return float(total)
 
 
+def path_safety_metrics(
+    G: nx.Graph,
+    path: Sequence,
+    epicenter_lonlat: Tuple[float, float],
+    origin=None,
+    *,
+    hazard_gamma: float = 0.35,
+) -> Dict[str, float]:
+    """
+    Path-level safety from a rolled-out node sequence (reporting / UI).
+
+    Primary score (higher = safer)::
+
+        safety_score = mean_epi_km − γ · mean(log1p(w_edge))
+
+    where ``mean_epi_km`` is the mean km distance of path nodes to the
+    epicenter and ``w_edge`` is the Algorithm-1 travel weight on each hop
+    (falls back to geometric length when weight is missing). Aligns with the
+    training aux term in ``src/safety_loss.py`` (farther from epi / lower
+    hazard inflation).
+
+    Also returns ``min_epi_km`` (closest approach) and the raw components.
+    """
+    nan = float("nan")
+    empty = {
+        "safety_score": nan,
+        "mean_epi_km": nan,
+        "min_epi_km": nan,
+        "mean_hazard": nan,
+        "hazard_gamma": float(hazard_gamma),
+    }
+    if not path:
+        return empty
+    origin = origin or get_graph_origin(G)
+    epi_km = project_local_km(
+        float(epicenter_lonlat[0]),
+        float(epicenter_lonlat[1]),
+        origin[0],
+        origin[1],
+    )
+    dists: List[float] = []
+    for n in path:
+        dists.append(float(euclidean(node_xy_km(G, n, origin), epi_km)))
+    mean_epi = float(np.mean(dists)) if dists else nan
+    min_epi = float(np.min(dists)) if dists else nan
+
+    haz_vals: List[float] = []
+    for u, v in zip(path[:-1], path[1:]):
+        w = None
+        if G.has_edge(u, v):
+            try:
+                data = G.edges[u, v]
+                # MultiGraph: edges[u,v] is an AtlasView of {key: attr_dict}
+                if hasattr(data, "values") and not isinstance(data, dict):
+                    data = next(iter(data.values()), {})
+                elif (
+                    isinstance(data, dict)
+                    and data
+                    and 0 in data
+                    and isinstance(data[0], dict)
+                ):
+                    data = data[0]
+                w = data.get("travel_time", data.get("weight"))
+            except Exception:
+                w = None
+        if w is None or not np.isfinite(float(w)):
+            w = float(
+                euclidean(node_xy_km(G, u, origin), node_xy_km(G, v, origin))
+            )
+        haz_vals.append(float(np.log1p(max(float(w), 0.0))))
+    mean_haz = float(np.mean(haz_vals)) if haz_vals else 0.0
+    gamma = float(hazard_gamma)
+    score = float(mean_epi - gamma * mean_haz) if np.isfinite(mean_epi) else nan
+    return {
+        "safety_score": score,
+        "mean_epi_km": mean_epi,
+        "min_epi_km": min_epi,
+        "mean_hazard": mean_haz,
+        "hazard_gamma": gamma,
+    }
+
+
 def exit_safety_km(
     G: nx.Graph,
     exit_node,
@@ -636,9 +718,10 @@ def compare_three_way(
 
     classical_summary = None
     classical_ms = None
+    c_env = None
     if include_classical and classical_model is not None:
         t0 = _time.perf_counter()
-        c_path, _c_r, _c_e, c_travel, _c_x, c_meta = predict_escape_route(
+        c_path, _c_r, c_env, c_travel, _c_x, c_meta = predict_escape_route(
             G,
             classical_model,
             mean,
@@ -661,10 +744,11 @@ def compare_three_way(
 
     dijkstra_summary = None
     d_path = None
+    d_env = None
     dijkstra_ms = None
     if include_dijkstra:
         t0 = _time.perf_counter()
-        d_path, _d_r, _d_e, d_travel, d_meta = dijkstra_escape_route(
+        d_path, _d_r, d_env, d_travel, d_meta = dijkstra_escape_route(
             G, start, dest, epicenter_lonlat
         )
         dijkstra_ms = (_time.perf_counter() - t0) * 1000.0
@@ -684,6 +768,30 @@ def compare_three_way(
         c_overlap = route_overlap_accuracy(classical_summary["path"], d_path)
         classical_summary["overlap_vs_dijkstra_pct"] = float(c_overlap)
 
+    # Path safety from rolled-out nodes on each engine's Algorithm-1 graph
+    # (higher = farther from epi / lower hazard inflation).
+    h_safe = path_safety_metrics(
+        h_env.G if h_env is not None else G, h_path, epicenter_lonlat
+    )
+    if classical_summary is not None:
+        classical_summary["safety"] = path_safety_metrics(
+            c_env.G if c_env is not None else G,
+            classical_summary["path"],
+            epicenter_lonlat,
+        )
+        classical_summary["safety_score"] = float(
+            classical_summary["safety"]["safety_score"]
+        )
+    if dijkstra_summary is not None:
+        dijkstra_summary["safety"] = path_safety_metrics(
+            d_env.G if d_env is not None else G,
+            dijkstra_summary["path"],
+            epicenter_lonlat,
+        )
+        dijkstra_summary["safety_score"] = float(
+            dijkstra_summary["safety"]["safety_score"]
+        )
+
     hybrid_summary = {
         "engine": "Hybrid QML (HQNN)",
         "path": h_path,
@@ -693,6 +801,8 @@ def compare_three_way(
         "overlap_vs_dijkstra_pct": float(h_overlap) if h_overlap is not None else None,
         "quantum_contribution": q_contrib_out,
         "latency_ms": float(round(hybrid_ms, 1)),
+        "safety": h_safe,
+        "safety_score": float(h_safe["safety_score"]),
         "meta": h_meta,
         "radii_trace": h_radii,
         "sample_x": sample_x,
@@ -701,12 +811,15 @@ def compare_three_way(
 
     # Narrative helpers (honest ratios — no forged numbers).
     # "beats" = strictly lower travel; "ties" = within 2% (parity, not a win).
+    # Safety is reported separately; "safety win" only when travel ties.
     narrative = {
         "tagline": (
             "Hybrid delivers near-Dijkstra quality with quantum-classical local inference"
         ),
         "hybrid_beats_classical": None,
         "hybrid_ties_classical": None,
+        "hybrid_safer_than_classical": None,
+        "hybrid_safety_win": None,
         "hybrid_near_dijkstra": None,
         "hybrid_vs_classical_time_ratio": None,
         "hybrid_vs_dijkstra_time_ratio": None,
@@ -722,6 +835,15 @@ def compare_three_way(
             ties = bool(not beats and ht <= ct * 1.02)
             narrative["hybrid_beats_classical"] = beats
             narrative["hybrid_ties_classical"] = ties
+        hs = float(hybrid_summary["safety_score"])
+        cs = float(classical_summary.get("safety_score", float("nan")))
+        if np.isfinite(hs) and np.isfinite(cs):
+            safer = bool(hs > cs + 1e-6)
+            narrative["hybrid_safer_than_classical"] = safer
+            # Safety win only when travel is a tie (not a travel beat).
+            narrative["hybrid_safety_win"] = bool(
+                safer and narrative.get("hybrid_ties_classical")
+            )
         narrative["paths_diverge"] = bool(
             list(h_path) != list(classical_summary["path"])
         )
