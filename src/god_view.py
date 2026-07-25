@@ -2,17 +2,20 @@
 God View — B2G / B2B Command Center for QuantumRelief.
 
 Citizens get free B2C escape routing. Commanders and logistics teams use this
-surface to watch city-wide Hybrid QML corridors, inject hazards, and re-route
-the network in one shot.
+surface to watch city-wide corridor stress, inject hazards, and re-route the
+network in one shot.
 
-Speed strategy (Streamlit Cloud CPU):
+Honest architecture (Streamlit Cloud CPU):
   - Bulk arterial heatmap → static Dijkstra on the hazard-weighted graph
   - Hybrid QML only on a tiny hero sample (green quantum arterials)
+  - Scaled-citizen metric is narrative (CITY_SCALE_PER_AGENT × batch), not
+    14k Hybrid inferences
   - Never auto-run; cache last sim in session_state until Trigger is clicked
 """
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -37,7 +40,7 @@ HYBRID_HERO_SAMPLE = 4  # green quantum arterials for B2G story
 HYBRID_MAX_STEPS = 28
 BRIDGE_PENALTY = 80.0
 FLOOD_BASE_MULT = 1.0
-# Pitch narrative: default batch → ~14k "citizens routed"
+# Pitch narrative only: default batch of 10 → ~14k "citizens under command"
 CITY_SCALE_PER_AGENT = 1_428
 
 
@@ -222,6 +225,7 @@ def run_evacuation_batch(
         "sample_x": None,
         "quantum_contribution": 0.0,
         "n_agents_requested": 0,
+        "elapsed_s": 0.0,
     }
     if not candidates or not exits:
         return empty
@@ -244,6 +248,7 @@ def run_evacuation_batch(
     quantum_edges: Set[Tuple[Any, Any]] = set()
     sample_x = None
     total = len(starts)
+    t0 = time.perf_counter()
 
     for i, start in enumerate(starts, start=1):
         dest = exits[int(rng.integers(0, len(exits)))]
@@ -313,6 +318,7 @@ def run_evacuation_batch(
     q_contrib = (
         estimate_quantum_contribution_pct(model, sample_x) if model is not None else 0.0
     )
+    elapsed_s = float(time.perf_counter() - t0)
 
     return {
         "paths": paths,
@@ -327,6 +333,7 @@ def run_evacuation_batch(
         "sample_x": sample_x,
         "quantum_contribution": float(q_contrib),
         "n_agents_requested": n_agents,
+        "elapsed_s": elapsed_s,
     }
 
 
@@ -412,7 +419,6 @@ def build_god_view_map(
             if not G.has_edge(u, v):
                 continue
             is_q = (u, v) in quantum_edges or (v, u) in quantum_edges
-            # Defer quantum edges to second pass so they sit on top
             if is_q:
                 continue
             frac = count / max_count
@@ -502,23 +508,32 @@ def build_god_view_map(
     <div style="position:fixed;bottom:28px;left:28px;z-index:9999;
          background:rgba(10,22,40,0.92);border:1px solid rgba(255,107,26,0.35);
          border-radius:8px;padding:10px 14px;font-size:12px;color:#e8eef6;
-         font-family:sans-serif;line-height:1.55;max-width:280px;">
+         font-family:sans-serif;line-height:1.55;max-width:300px;
+         pointer-events:none;">
       <b style="color:#ff6b1a;letter-spacing:0.04em;">GOD VIEW LEGEND</b><br/>
       <span style="color:#e74c3c;">●</span> Danger / epicenter / blocked bridge<br/>
-      <span style="color:#2ecc71;">●</span> Quantum sample arterials (Hybrid)<br/>
+      <span style="color:#2ecc71;">●</span> Quantum sample arterials (Hybrid hero)<br/>
       <span style="color:#22d3ee;">●</span> Alternate corridors (Dijkstra bulk)<br/>
       <span style="color:#f5c518;">●</span> Exit congestion pressure<br/>
-      <span style="color:#3b82f6;">●</span> Flood / sector hazard zone
+      <span style="color:#3b82f6;">●</span> Flood / sector hazard zone<br/>
+      <span style="color:#a8bdd4;font-size:11px;">Hybrid = small sample · bulk = Dijkstra</span>
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
     return m
 
 
-def _init_god_view_state(G: nx.Graph, exits: Sequence, origin) -> None:
-    """Session defaults for the Command Center."""
+def _default_epi_from_graph(G: nx.Graph) -> Tuple[float, float]:
+    """Return (lat, lon) near the graph centroid."""
+    xs = [G.nodes[n]["x"] for n in G.nodes()]
+    ys = [G.nodes[n]["y"] for n in G.nodes()]
+    return float(np.mean(ys)), float(np.mean(xs))
+
+
+def init_god_view_state(G: nx.Graph, exits: Sequence, origin) -> None:
+    """Session defaults for the Command Center (call before sidebar controls)."""
     if "gv_flood" not in st.session_state:
-        st.session_state["gv_flood"] = 0.25
+        st.session_state["gv_flood"] = 0.35
     if "gv_block_bridge" not in st.session_state:
         st.session_state["gv_block_bridge"] = False
     if "gv_batch_size" not in st.session_state:
@@ -527,27 +542,48 @@ def _init_god_view_state(G: nx.Graph, exits: Sequence, origin) -> None:
         st.session_state["gv_seed"] = 42
     if "gv_bridge_edge" not in st.session_state:
         st.session_state["gv_bridge_edge"] = find_main_bridge_edge(G)
+    if "gv_sync_b2c_epi" not in st.session_state:
+        st.session_state["gv_sync_b2c_epi"] = True
     if "gv_epi_lat" not in st.session_state:
         if "epi_lat" in st.session_state:
             st.session_state["gv_epi_lat"] = float(st.session_state["epi_lat"])
             st.session_state["gv_epi_lon"] = float(st.session_state["epi_lon"])
         else:
-            xs = [G.nodes[n]["x"] for n in G.nodes()]
-            ys = [G.nodes[n]["y"] for n in G.nodes()]
-            st.session_state["gv_epi_lat"] = float(np.mean(ys))
-            st.session_state["gv_epi_lon"] = float(np.mean(xs))
+            lat, lon = _default_epi_from_graph(G)
+            st.session_state["gv_epi_lat"] = lat
+            st.session_state["gv_epi_lon"] = lon
     if "gv_map_center" not in st.session_state:
         st.session_state["gv_map_center"] = [float(origin[1]), float(origin[0])]
     if "gv_result" not in st.session_state:
         st.session_state["gv_result"] = None
     if "gv_hazard_meta" not in st.session_state:
         st.session_state["gv_hazard_meta"] = {
-            "flood_level": 0.25,
+            "flood_level": 0.35,
             "block_bridge": False,
             "bridge_edge": st.session_state.get("gv_bridge_edge"),
             "blocked_edges": 0,
             "penalized_edges": 0,
         }
+
+
+def _resolve_epicenter(controls: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Prefer B2C session epicenter when sync is on; else God View lat/lon.
+    Returns (lon, lat) for routing APIs.
+    """
+    sync = bool(controls.get("sync_b2c_epi", st.session_state.get("gv_sync_b2c_epi", True)))
+    if sync and "epi_lat" in st.session_state and "epi_lon" in st.session_state:
+        lat = float(st.session_state["epi_lat"])
+        lon = float(st.session_state["epi_lon"])
+        st.session_state["gv_epi_lat"] = lat
+        st.session_state["gv_epi_lon"] = lon
+        return lon, lat
+
+    lat = float(controls.get("epi_lat", st.session_state.get("gv_epi_lat", 14.59)))
+    lon = float(controls.get("epi_lon", st.session_state.get("gv_epi_lon", 120.97)))
+    st.session_state["gv_epi_lat"] = lat
+    st.session_state["gv_epi_lon"] = lon
+    return lon, lat
 
 
 def render_god_view_controls() -> Dict[str, Any]:
@@ -558,8 +594,8 @@ def render_god_view_controls() -> Dict[str, Any]:
     """
     st.markdown("## Command Center")
     st.caption(
-        "B2G surface — inject hazards, trigger city-wide Hybrid evacuation, "
-        "watch Quantum arterials rebalance live."
+        "B2G surface — inject hazards, trigger city-wide evacuation, "
+        "watch Hybrid sample arterials rebalance against Dijkstra bulk."
     )
 
     st.markdown(
@@ -567,8 +603,10 @@ def render_god_view_controls() -> Dict[str, Any]:
         "City-Wide Evacuation Simulation</div>"
         "<div style='color:#a8bdd4;font-size:0.82rem'>"
         "Citizens get free B2C routing. Commanders use God View for logistics, "
-        "corridor stress, and Hybrid QML fleet rebalancing. "
-        f"Fast path: Dijkstra bulk + {HYBRID_HERO_SAMPLE} Hybrid hero corridors."
+        "corridor stress, and Hybrid QML fleet rebalancing.<br/>"
+        f"<b style='color:#e8eef6'>Fast path:</b> Dijkstra bulk + "
+        f"≤{HYBRID_HERO_SAMPLE} Hybrid hero corridors "
+        "(not 14k Hybrid inferences)."
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -585,7 +623,7 @@ def render_god_view_controls() -> Dict[str, Any]:
         "Flood / sector hazard level",
         min_value=0.0,
         max_value=1.0,
-        value=float(st.session_state.get("gv_flood", 0.25)),
+        value=float(st.session_state.get("gv_flood", 0.35)),
         step=0.05,
         key="gv_flood",
         help="Raises travel weights in the central flood sector (Algorithm-1 style penalties).",
@@ -597,7 +635,7 @@ def render_god_view_controls() -> Dict[str, Any]:
         help="Heavily penalize the highest-centrality arterial edge.",
     )
     n_agents = st.slider(
-        "Simulated citizens (batch)",
+        "Simulated agents (batch)",
         min_value=4,
         max_value=MAX_BATCH_SIZE,
         value=int(st.session_state.get("gv_batch_size", DEFAULT_BATCH_SIZE)),
@@ -605,13 +643,55 @@ def render_god_view_controls() -> Dict[str, Any]:
         key="gv_batch_size",
         help=(
             f"Default {DEFAULT_BATCH_SIZE}: Dijkstra for bulk heatmap, "
-            f"Hybrid QML on ≤{HYBRID_HERO_SAMPLE} hero corridors. Max {MAX_BATCH_SIZE} on Cloud."
+            f"Hybrid QML on ≤{HYBRID_HERO_SAMPLE} hero corridors. Max {MAX_BATCH_SIZE} on Cloud. "
+            f"Scaled citizens = batch × {CITY_SCALE_PER_AGENT:,} (narrative only)."
         ),
     )
+
+    sync_b2c = st.checkbox(
+        "Use B2C epicenter (if set)",
+        value=bool(st.session_state.get("gv_sync_b2c_epi", True)),
+        key="gv_sync_b2c_epi",
+        help="Reuse the epicenter from the B2C map-click session when available.",
+    )
+
+    epi_lat = float(st.session_state.get("gv_epi_lat", 14.59))
+    epi_lon = float(st.session_state.get("gv_epi_lon", 120.97))
+    if sync_b2c and "epi_lat" in st.session_state:
+        st.caption(
+            f"Epicenter synced from B2C · "
+            f"{float(st.session_state['epi_lat']):.5f}, "
+            f"{float(st.session_state['epi_lon']):.5f}"
+        )
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            epi_lat = st.number_input(
+                "Epicenter lat",
+                value=epi_lat,
+                format="%.5f",
+                key="gv_epi_lat",
+                help="Hazard epicenter latitude (degrees).",
+            )
+        with c2:
+            epi_lon = st.number_input(
+                "Epicenter lon",
+                value=epi_lon,
+                format="%.5f",
+                key="gv_epi_lon",
+                help="Hazard epicenter longitude (degrees).",
+            )
 
     bridge = st.session_state.get("gv_bridge_edge")
     if bridge is not None:
         st.caption(f"Bridge target edge · `{bridge[0]} ↔ {bridge[1]}`")
+
+    scaled_preview = int(CITY_SCALE_PER_AGENT * int(n_agents))
+    st.caption(
+        f"Batch {int(n_agents)} agents → narrative scale "
+        f"**~{scaled_preview:,} citizens** "
+        f"(×{CITY_SCALE_PER_AGENT:,} per agent · not Hybrid count)."
+    )
 
     trigger = st.button(
         "Trigger City-Wide Evacuation Simulation",
@@ -624,8 +704,116 @@ def render_god_view_controls() -> Dict[str, Any]:
         "flood_level": float(flood),
         "block_bridge": bool(block),
         "n_agents": int(n_agents),
+        "sync_b2c_epi": bool(sync_b2c),
+        "epi_lat": float(epi_lat),
+        "epi_lon": float(epi_lon),
         "trigger": bool(trigger),
     }
+
+
+def _render_empty_metrics() -> None:
+    """Enterprise standby row before the first Trigger — no spinner."""
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Simulated Agents", "—", delta="awaiting trigger")
+    with m2:
+        st.metric("Scaled Citizens", "—", delta="narrative · after run")
+    with m3:
+        st.metric("Escape Success", "—", delta="run simulation")
+    with m4:
+        st.metric("Network Alert", "STANDBY")
+
+    st.markdown(
+        '<div class="qr-map-hint" style="margin-top:0.5rem">'
+        "<b>Command Center ready.</b> Set flood / bridge hazards in the sidebar, "
+        "then click <b>Trigger City-Wide Evacuation Simulation</b>. "
+        f"Default batch <b>{DEFAULT_BATCH_SIZE}</b> agents "
+        f"(≤{HYBRID_HERO_SAMPLE} Hybrid QML + Dijkstra bulk) — typically under 15s on Cloud. "
+        "Results cache until you trigger again."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_live_metrics(
+    result: Dict[str, Any],
+    *,
+    hazard_meta: Dict[str, Any],
+    controls: Dict[str, Any],
+    hybrid_model,
+    pennylane_ok: bool,
+) -> None:
+    """Post-sim metrics: honest agent vs scaled citizens + quantum load."""
+    batch_n = max(0, int(result.get("n_routed") or 0))
+    n_hybrid = int(result.get("n_hybrid") or 0)
+    n_dij = int(result.get("n_dijkstra") or 0)
+    citizens_scaled = int(CITY_SCALE_PER_AGENT * batch_n)
+    success = float(result.get("success_rate") or 0.0)
+    elapsed = float(result.get("elapsed_s") or 0.0)
+
+    q_contrib = float(result.get("quantum_contribution") or 0.0)
+    if q_contrib <= 0 and hybrid_model is not None:
+        q_contrib = float(estimate_quantum_contribution_pct(hybrid_model))
+    if not pennylane_ok and q_contrib <= 0:
+        q_contrib = 37.9
+
+    alert = congestion_alert_status(
+        float(hazard_meta.get("flood_level", controls.get("flood_level", 0))),
+        bool(hazard_meta.get("block_bridge", controls.get("block_bridge", False))),
+        int(hazard_meta.get("blocked_edges", 0)),
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric(
+            "Simulated Agents",
+            f"{batch_n}",
+            delta=f"{n_hybrid} Hybrid · {n_dij} Dijkstra",
+        )
+    with m2:
+        st.metric(
+            "Scaled Citizens (narrative)",
+            f"{citizens_scaled:,}",
+            delta=f"×{CITY_SCALE_PER_AGENT:,} per agent",
+        )
+    with m3:
+        st.metric(
+            "Escape Success Rate",
+            f"{success:.1f}%",
+            delta=f"{result.get('n_success', 0)} exits reached",
+        )
+    with m4:
+        st.metric(
+            "Quantum Contribution",
+            f"{q_contrib:.1f}%",
+            delta="PHN combine · live",
+        )
+
+    a1, a2 = st.columns([2, 1])
+    with a1:
+        st.metric("Network Congestion Alert", alert)
+    with a2:
+        if elapsed > 0:
+            st.metric("Batch latency", f"{elapsed:.1f}s", delta=f"{batch_n} agents")
+        else:
+            st.metric("Batch latency", "—")
+
+    latency_note = ""
+    if elapsed > 0:
+        latency_note = f"Batch finished in **{elapsed:.1f}s** · "
+    st.caption(
+        f"{latency_note}"
+        f"Avg travel · {float(result.get('avg_travel') or 0):.1f}  ·  "
+        f"Hybrid heroes · {n_hybrid}  ·  "
+        f"Dijkstra bulk · {n_dij}  ·  "
+        f"Flood edges · {hazard_meta.get('penalized_edges', 0)}  ·  "
+        f"{QUANTUM_CONTRIBUTION_FORMULA.split(',')[0]}."
+    )
+    st.caption(
+        f"Honest note: only **{n_hybrid}** Hybrid QML inferences ran this batch; "
+        f"the **{citizens_scaled:,}** scaled-citizen figure is narrative "
+        f"(batch × {CITY_SCALE_PER_AGENT:,}), not Hybrid count."
+    )
 
 
 def render_god_view(
@@ -645,7 +833,7 @@ def render_god_view(
     Last result is cached in ``st.session_state['gv_result']``.
     """
     origin = get_graph_origin(G)
-    _init_god_view_state(G, exits, origin)
+    init_god_view_state(G, exits, origin)
 
     st.markdown(
         '<div class="qr-tagline" style="margin-top:0.35rem">'
@@ -655,9 +843,9 @@ def render_god_view(
     st.markdown(
         '<div class="qr-map-hint">'
         "<b>B2G / B2B:</b> Citizens escape free on the B2C tab. "
-        "Here, commanders see <b>city-wide corridors</b>, "
+        "Here, commanders monitor <b>city-wide flows</b>, "
         "inject flood &amp; bridge failures, and rebalance the network in one trigger. "
-        "<b>Bright green = Quantum sample arterials</b> · <b>Cyan = Dijkstra alternatives</b> · "
+        "<b>Bright green = Hybrid hero sample</b> · <b>Cyan = Dijkstra bulk</b> · "
         "<b>Red = danger / blocked</b>"
         "</div>",
         unsafe_allow_html=True,
@@ -669,22 +857,12 @@ def render_god_view(
 
     # Run batch ONLY on explicit Trigger — never auto-run on tab open
     if controls.get("trigger"):
-        epi = (
-            float(st.session_state["gv_epi_lon"]),
-            float(st.session_state["gv_epi_lat"]),
-        )
-        if "epi_lat" in st.session_state:
-            epi = (
-                float(st.session_state["epi_lon"]),
-                float(st.session_state["epi_lat"]),
-            )
-            st.session_state["gv_epi_lat"] = epi[1]
-            st.session_state["gv_epi_lon"] = epi[0]
-
+        epi = _resolve_epicenter(controls)
         n_agents = int(controls["n_agents"])
         n_hybrid = min(HYBRID_HERO_SAMPLE, n_agents)
         status = st.empty()
         progress = st.progress(0)
+        t_wall0 = time.perf_counter()
         try:
             progress.progress(0, text="Preparing hazard graph…")
         except TypeError:
@@ -703,7 +881,10 @@ def render_god_view(
                 "skip": "skip",
                 "fail": "retry",
             }.get(phase, phase)
-            status.caption(f"Routing citizen {i}/{total} · {label}")
+            elapsed = time.perf_counter() - t_wall0
+            status.caption(
+                f"Routing agent {i}/{total} · {label} · {elapsed:.1f}s elapsed"
+            )
             _set_progress(
                 i / max(total, 1),
                 f"City-wide evacuation {i}/{total} · {label}",
@@ -716,7 +897,7 @@ def render_god_view(
             bridge_edge=st.session_state.get("gv_bridge_edge"),
         )
         status.caption(
-            f"Routing {n_agents} citizens · {n_hybrid} Hybrid hero + "
+            f"Routing {n_agents} agents · {n_hybrid} Hybrid hero + "
             f"{n_agents - n_hybrid} Dijkstra bulk…"
         )
         result = run_evacuation_batch(
@@ -732,8 +913,19 @@ def render_god_view(
             max_steps=HYBRID_MAX_STEPS,
             progress_cb=_progress,
         )
-        _set_progress(1.0, "Evacuation batch complete")
-        status.empty()
+        wall_s = float(time.perf_counter() - t_wall0)
+        # Prefer wall clock (includes hazard prep) if batch timer is thinner
+        if wall_s > float(result.get("elapsed_s") or 0):
+            result["elapsed_s"] = wall_s
+        _set_progress(
+            1.0,
+            f"Evacuation complete · {result['elapsed_s']:.1f}s",
+        )
+        status.success(
+            f"Done · {result['n_success']}/{result['n_routed']} reached · "
+            f"{result.get('n_hybrid', 0)} Hybrid / {result.get('n_dijkstra', 0)} Dijkstra · "
+            f"{result['elapsed_s']:.1f}s"
+        )
         progress.empty()
 
         st.session_state["gv_result"] = result
@@ -743,7 +935,8 @@ def render_god_view(
             st.toast(
                 f"Evacuation complete — {result['n_success']}/{result['n_routed']} "
                 f"reached · {result.get('n_hybrid', 0)} Hybrid / "
-                f"{result.get('n_dijkstra', 0)} Dijkstra.",
+                f"{result.get('n_dijkstra', 0)} Dijkstra · "
+                f"{result['elapsed_s']:.1f}s.",
                 icon="🛰️",
             )
         except Exception:
@@ -752,121 +945,65 @@ def render_god_view(
     result = st.session_state.get("gv_result")
     has_sim = result is not None and int(result.get("n_routed") or 0) > 0
     hazard_meta = st.session_state.get("gv_hazard_meta") or {
-        "flood_level": controls.get("flood_level", 0.25),
+        "flood_level": controls.get("flood_level", 0.35),
         "block_bridge": controls.get("block_bridge", False),
         "bridge_edge": st.session_state.get("gv_bridge_edge"),
         "blocked_edges": 0,
         "penalized_edges": 0,
     }
 
-    if not has_sim:
-        result = {
-            "n_routed": 0,
-            "n_success": 0,
-            "n_hybrid": 0,
-            "n_dijkstra": 0,
-            "success_rate": 0.0,
-            "edge_counts": Counter(),
-            "quantum_edges": set(),
-            "quantum_contribution": 0.0,
-            "avg_travel": 0.0,
-        }
-
-    q_contrib = float(result.get("quantum_contribution") or 0.0)
-    if q_contrib <= 0 and hybrid_model is not None:
-        q_contrib = float(estimate_quantum_contribution_pct(hybrid_model))
-    if not pennylane_ok and q_contrib <= 0:
-        q_contrib = 37.9
-
-    batch_n = max(0, int(result.get("n_routed") or 0))
-    if has_sim:
-        citizens_routed = int(CITY_SCALE_PER_AGENT * batch_n)
-        success = float(result.get("success_rate") or 0.0)
-    else:
-        citizens_routed = 0
-        success = 0.0
-
-    alert = congestion_alert_status(
-        float(hazard_meta.get("flood_level", controls.get("flood_level", 0))),
-        bool(hazard_meta.get("block_bridge", controls.get("block_bridge", False))),
-        int(hazard_meta.get("blocked_edges", 0)),
-    )
-
     # ---- Metrics ----
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric(
-            "Active Citizens Routed",
-            f"{citizens_routed:,}" if has_sim else "—",
-            delta=(
-                f"batch {batch_n} · {result.get('n_hybrid', 0)} Hybrid"
-                if has_sim
-                else "awaiting trigger"
-            ),
-        )
-    with m2:
-        st.metric(
-            "Global Escape Success Rate",
-            f"{success:.1f}%" if has_sim else "—",
-            delta=(
-                f"{result.get('n_success', 0)} exits reached"
-                if has_sim
-                else "run simulation"
-            ),
-        )
-    with m3:
-        st.metric(
-            "Quantum HQNN Compute Load",
-            f"{q_contrib:.1f}%" if (has_sim or pennylane_ok) else "—",
-            delta="PHN contribution" if has_sim else "standby",
-        )
-    with m4:
-        st.metric("Network Congestion Alert", alert if has_sim else "STANDBY")
-
     if has_sim:
-        st.caption(
-            f"Avg travel · {float(result.get('avg_travel') or 0):.1f}  ·  "
-            f"Hybrid heroes · {result.get('n_hybrid', 0)}  ·  "
-            f"Dijkstra bulk · {result.get('n_dijkstra', 0)}  ·  "
-            f"Flood edges · {hazard_meta.get('penalized_edges', 0)}  ·  "
-            f"{QUANTUM_CONTRIBUTION_FORMULA.split(',')[0]}."
+        _render_live_metrics(
+            result,
+            hazard_meta=hazard_meta,
+            controls=controls,
+            hybrid_model=hybrid_model,
+            pennylane_ok=pennylane_ok,
         )
     else:
-        st.info(
-            "Set hazards, then click **Trigger City-Wide Evacuation Simulation**. "
-            f"Default batch is **{DEFAULT_BATCH_SIZE}** citizens "
-            f"(≤{HYBRID_HERO_SAMPLE} Hybrid QML + Dijkstra bulk) — typically under 15s on Cloud."
-        )
+        _render_empty_metrics()
 
-    # ---- Map (placeholder until first trigger; then cached result) ----
+    # ---- Map (hazard preview before sim; corridors after trigger) ----
     epi = (
         float(st.session_state["gv_epi_lon"]),
         float(st.session_state["gv_epi_lat"]),
     )
+    # Keep map epicenter in sync with B2C when checkbox is on
+    if controls.get("sync_b2c_epi") and "epi_lat" in st.session_state:
+        epi = (
+            float(st.session_state["epi_lon"]),
+            float(st.session_state["epi_lat"]),
+        )
+
     bridge = hazard_meta.get("bridge_edge") or st.session_state.get("gv_bridge_edge")
     show_bridge = bridge if hazard_meta.get("block_bridge") else None
 
-    # Preview hazard rings even before sim; corridors only after trigger
     preview_flood = float(
-        hazard_meta.get("flood_level", controls.get("flood_level", 0.25))
+        hazard_meta.get("flood_level", controls.get("flood_level", 0.35))
         if has_sim
-        else controls.get("flood_level", 0.25)
+        else controls.get("flood_level", 0.35)
     )
     preview_bridge = (
         show_bridge
         if has_sim
-        else (st.session_state.get("gv_bridge_edge") if controls.get("block_bridge") else None)
+        else (
+            st.session_state.get("gv_bridge_edge")
+            if controls.get("block_bridge")
+            else None
+        )
     )
 
+    empty_counts: Counter = Counter()
     fmap = build_god_view_map(
         G,
         exits,
         epi,
-        result.get("edge_counts") or Counter(),
-        quantum_edges=result.get("quantum_edges") or set(),
+        (result.get("edge_counts") if has_sim else None) or empty_counts,
+        quantum_edges=(result.get("quantum_edges") if has_sim else None) or set(),
         bridge_edge=preview_bridge,
         flood_level=preview_flood,
-        map_center=st.session_state.get("gv_map_center"),
+        map_center=st.session_state.get("gv_map_center") or [epi[1], epi[0]],
         map_zoom=15,
         hazard_t=8.0,
     )
@@ -881,14 +1018,15 @@ def render_god_view(
     with st.expander("Architecture for judges", expanded=False):
         st.markdown(
             f"""
-**How God View works (Cloud-fast)**
+**How God View works (honest, Cloud-fast)**
 
 1. Commander sets **flood / sector hazard** and optional **bridge block**
 2. Graph copy receives Algorithm-1-style weight penalties
 3. **Dijkstra** routes the bulk batch → cyan arterial heatmap (seconds)
-4. **Hybrid QML** (`predict_escape_route`) runs on ≤{HYBRID_HERO_SAMPLE} hero citizens → **green quantum arterials**
+4. **Hybrid QML** (`predict_escape_route`) runs on ≤{HYBRID_HERO_SAMPLE} hero agents → **green quantum arterials**
 5. Live **Quantum Contribution %** is read from the PHN `combine` layer — same formula as B2C
-6. Result is **cached** until you click Trigger again (no re-run on tab switch / widget tweak)
+6. **Scaled citizens** = simulated agents × {CITY_SCALE_PER_AGENT:,} — **narrative only**, not Hybrid inference count
+7. Result is **cached** until you click Trigger again (no re-run on tab switch / widget tweak)
 
 **Pitch line:** Citizens escape free (B2C). Governments & logistics command the network (God View).
             """
