@@ -8,13 +8,9 @@ Layout: left ~2/3 map (fixed), right ~1/3 scrollable controls + metrics.
 
 from __future__ import annotations
 
-import json
-import re
 import sys
-import urllib.parse
-import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List
 
 import folium
 import networkx as nx
@@ -352,63 +348,6 @@ def _set_epicenter(lat: float, lon: float) -> None:
     st.session_state["epi_lon"] = float(lon)
 
 
-def _parse_lat_lon(text: str) -> Optional[Tuple[float, float]]:
-    """Parse 'lat, lon' or 'lat lon' from a free-text field."""
-    raw = (text or "").strip()
-    if not raw:
-        return None
-    m = re.match(
-        r"^\s*(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*$",
-        raw,
-    )
-    if not m:
-        return None
-    a, b = float(m.group(1)), float(m.group(2))
-    # Manila Intramuros ≈ lat 14.59, lon 120.97 — detect swapped order
-    if 14.0 <= a <= 15.5 and 120.0 <= b <= 122.0:
-        return a, b
-    if 14.0 <= b <= 15.5 and 120.0 <= a <= 122.0:
-        return b, a
-    # Accept any plausible lat/lon pair
-    if -90 <= a <= 90 and -180 <= b <= 180:
-        return a, b
-    return None
-
-
-def _geocode_address(query: str) -> Optional[Tuple[float, float]]:
-    """Nominatim lookup (no extra deps). Prefer Intramuros / Manila bias."""
-    q = (query or "").strip()
-    if not q:
-        return None
-    if "manila" not in q.lower() and "intramuros" not in q.lower():
-        q = f"{q}, Intramuros, Manila, Philippines"
-    url = (
-        "https://nominatim.openstreetmap.org/search?"
-        + urllib.parse.urlencode(
-            {"q": q, "format": "json", "limit": 1, "countrycodes": "ph"}
-        )
-    )
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "QuantumRelief-EscapeDemo/1.0"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if not data:
-            return None
-        return float(data[0]["lat"]), float(data[0]["lon"])
-    except Exception:
-        return None
-
-
-def _resolve_location_input(text: str) -> Optional[Tuple[float, float]]:
-    parsed = _parse_lat_lon(text)
-    if parsed is not None:
-        return parsed
-    return _geocode_address(text)
-
-
 def build_base_map(G, exits, map_center, map_zoom: int = 16):
     m = folium.Map(
         location=list(map_center),
@@ -514,9 +453,6 @@ def _set_location(G, exits, lat: float, lon: float) -> None:
         float(st.session_state["loc_lat"]),
         float(st.session_state["loc_lon"]),
     ]
-    st.session_state["loc_input"] = (
-        f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-    )
 
 
 def _init_session(G, exits, nodes, origin):
@@ -529,10 +465,6 @@ def _init_session(G, exits, nodes, origin):
         n0 = st.session_state["start_node"]
         st.session_state["loc_lat"] = float(G.nodes[n0]["y"])
         st.session_state["loc_lon"] = float(G.nodes[n0]["x"])
-    if "loc_input" not in st.session_state:
-        st.session_state["loc_input"] = (
-            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-        )
     if "dest_node" not in st.session_state:
         st.session_state["dest_node"] = exits[0]
     if "epi_lat" not in st.session_state:
@@ -645,27 +577,7 @@ def main():
             f' · node {st.session_state["start_node"]}</div>',
             unsafe_allow_html=True,
         )
-        st.caption("Click the map, or enter address / lat, lon below.")
-        loc_text = st.text_input(
-            "Address or lat, lon",
-            key="loc_input",
-            label_visibility="collapsed",
-            placeholder="14.5908, 120.9752  or  Fort Santiago, Intramuros",
-        )
-        if st.button("Set location", use_container_width=True, type="secondary"):
-            resolved = _resolve_location_input(loc_text)
-            if resolved is None:
-                st.warning("Could not parse location. Use lat, lon or a Manila address.")
-            else:
-                lat_r, lon_r = resolved
-                _clear_route_results()
-                _set_location(G, exits, lat_r, lon_r)
-                _refresh_exit_ranking(G, exits)
-                st.session_state["map_status"] = (
-                    f"Location → {st.session_state['loc_lat']:.5f}, "
-                    f"{st.session_state['loc_lon']:.5f}"
-                )
-                st.rerun()
+        st.caption("Click the map to set your location.")
 
         st.markdown('<div class="qr-panel"><h3>Epicenter</h3></div>', unsafe_allow_html=True)
         st.markdown(
