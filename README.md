@@ -35,19 +35,32 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 ## Results (latest hard retrain)
 
-From `data/retrain_report.json` — reused **~18,932** hard samples, Hybrid Phase A/B **20+8** on **6500** (hard-seed oversampled), fair eval **28** trials (hard_seeds + random).
+From `data/retrain_report.json` — hard fine-tune (`λ_safe=0.35`, hard seeds) on serving Hybrid; fair eval **28** trials (hard_seeds + random).
 
 | Metric | Hybrid | Classical | Dijkstra |
 | --- | --- | --- | --- |
-| Val accuracy | ≈ **0.899** | ≈ **0.886** | — |
-| Mean travel time | ≈ **12.03** | ≈ **11.98** | ≈ **12.17** |
+| Val accuracy | ≈ **0.883** | ≈ **0.886** | — |
+| Mean travel time | ≈ **13.65** | ≈ **14.40** | ≈ **12.29** |
+| Mean safety score | ≈ **0.89** | ≈ **0.87** | ≈ **0.94** |
 | Exit reached | **100%** | **100%** | **100%** |
-| Path overlap vs Dijkstra | ≈ **54.1%** | ≈ **55.8%** | — |
-| Quantum contribution | ≈ **82.4%** | — | — |
+| Path overlap vs Dijkstra | ≈ **59.0%** | ≈ **49.3%** | — |
+| Quantum contribution | ≈ **77.6%** | — | — |
 
-Hybrid travel wins ≈ **71.4%** of trials and stays near Dijkstra on ≈ **89.3%**. Mean travel is within **~0.05** of Classical (near parity; Classical still slightly ahead on mean + overlap). Checkpoints: `film_hybrid.pt`, `film_classical.pt`.
+Hybrid **mean travel ≤ Classical** (Δ ≈ −0.75) with **~78.6%** strict travel wins and **~78.6%** near Dijkstra. Mean safety also edges Classical. Serving: `models/film_hybrid.pt` (promoted from hardft).
 
-### Quantum Contribution (≈82.4%)
+**Safety score** (path rollout, higher = safer):
+
+```
+safety_score = mean_epi_km − 0.35 · mean(log1p(w_edge))
+```
+
+- `mean_epi_km` — mean km distance of path nodes to the epicenter  
+- `w_edge` — Algorithm-1 travel weight on each hop (hazard inflation)  
+- Training uses the same idea via `λ_safe · L_safe` in `src/safety_loss.py` (soft preference for safer next hops; Dijkstra CE stays primary)
+
+**Promotion rule:** copy candidate → `film_hybrid.pt` only when mean travel ≤ Classical, **or** travel within 2% of Classical **and** mean safety clearly higher.
+
+### Quantum Contribution (≈77.6%)
 
 Live metric from `HybridFiLMNetwork.combine` (`Linear(10→5)`):
 
@@ -81,7 +94,7 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
 - **3-way metrics** — travel time, exit reached, path overlap, quantum contribution, latency (ms)
 - **Auto-best exit** — silent ranking; one recommended-exit line in the panel
-- **Location** — Folium map click **or** address / lat-lon input, snapped to nearest graph node
+- **Location** — Folium map click, snapped to nearest graph node
 - **Epicenter** — **Random epicenter** only
 - **Dynamic hazards** — expanding \(r_{epi}\) / \(r_{exit}\) rings scrubbed by simulation time `t`
 - **B2G2C Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel
@@ -139,7 +152,7 @@ Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM do
 
 ## How to use — Escape (B2G2C)
 
-1. **Click the map** (or enter address / `lat, lon`) to set your location — snapped to the nearest road node
+1. **Click the map** to set your location — snapped to the nearest road node
 2. Press **Random epicenter**
 3. Read the **Best exit** line (auto-recommended)
 4. Press **Find route** — **cyan** Hybrid · **gold** Classical · **white dashed** Dijkstra
