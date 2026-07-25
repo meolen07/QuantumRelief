@@ -41,8 +41,6 @@ from src.dynamic_simulation import (
     damage_radius,
     disruption_edge_latlons,
     exit_radius,
-    sample_flood_corridor,
-    sample_random_disruptions,
 )
 from src.film_model import ensure_trained_model
 from src.graph_setup import (
@@ -64,6 +62,11 @@ from src.routing_service import (
     predict_escape_route,
     recommend_best_exit,
     route_overlap_accuracy as _rs_route_overlap,
+)
+from src.traffic_provider import (
+    TrafficNotConfiguredError,
+    get_traffic_provider,
+    traffic_mode_badge,
 )
 from src.utils import DATA_DIR, get_graph_origin
 
@@ -197,6 +200,14 @@ st.markdown(
     .qr-badge.warn {
       background: rgba(255,138,76,0.12); color: #ffb08a;
       border: 1px solid rgba(255,138,76,0.35);
+    }
+    .qr-badge.feed {
+      background: rgba(245,197,66,0.12); color: var(--qr-gold);
+      border: 1px solid rgba(245,197,66,0.4);
+    }
+    .qr-badge.feed.live {
+      background: rgba(0,229,255,0.14); color: var(--qr-cyan);
+      border: 1px solid rgba(0,229,255,0.4);
     }
     .qr-panel {
       background: linear-gradient(165deg, rgba(14,22,40,0.94), rgba(10,15,30,0.9));
@@ -615,18 +626,19 @@ def _disruption_summary() -> str:
 
 
 def _set_random_disruption(G, *, soft_block: bool = False) -> int:
-    """Sample a soft congestion or soft-closed corridor; clear prior routes."""
+    """Sample a soft congestion or soft-closed corridor via traffic provider."""
     import time as _time
 
     seed = int(_time.time() * 1000) % (2**31 - 1)
     corridor = (
         int(np.random.randint(3, 6)) if soft_block else int(np.random.randint(2, 5))
     )
-    dset = sample_random_disruptions(
+    provider = get_traffic_provider()
+    dset = provider.get_edge_disruptions(
         G,
+        kind="soft_block" if soft_block else "congestion",
         n_seed_edges=1,
         corridor_extra=corridor,
-        soft_block=soft_block,
         seed=seed,
     )
     st.session_state["edge_disruptions"] = dset.to_serializable()
@@ -642,13 +654,15 @@ def _set_flood_corridor(
     seed: Optional[int] = None,
     corridor_extra: int = 11,
 ) -> int:
-    """Ondoy-like soft flood corridor (stronger ×12); clear prior routes."""
+    """Ondoy-like soft flood corridor via traffic provider; clear prior routes."""
     import time as _time
 
     if seed is None:
         seed = int(_time.time() * 1000) % (2**31 - 1)
-    dset = sample_flood_corridor(
+    provider = get_traffic_provider()
+    dset = provider.get_edge_disruptions(
         G,
+        kind="flood",
         near_node=near_node,
         corridor_extra=int(corridor_extra),
         seed=int(seed),
@@ -662,6 +676,23 @@ def _set_flood_corridor(
 def _clear_disruption() -> None:
     st.session_state.pop("edge_disruptions", None)
     _clear_route_results()
+
+
+def _traffic_feed_badge_html() -> str:
+    """Production-shaped feed badge: Demo · mock traffic vs Live · traffic API."""
+    info = get_traffic_provider().mode_info()
+    cls = "qr-badge feed live" if info.mode == "live" else "qr-badge feed"
+    return f'<span class="{cls}">{info.badge}</span>'
+
+
+def _handle_traffic_error(exc: Exception) -> None:
+    """Surface live-mode configure errors without breaking the Escape map."""
+    msg = str(exc) or "Traffic feed unavailable."
+    st.session_state["map_status"] = msg
+    try:
+        st.warning(msg)
+    except Exception:
+        pass
 
 
 # Pinned flood seeds that keep Hybrid travel ≤ Classical on curated corridors
@@ -691,55 +722,63 @@ def _run_judge_demo(G, exits) -> str:
     """
     One-click 60s path: curated start (+ mild epi) + Flooded corridor + auto-route.
 
-    Story: map changed (amber flood stand-in) → Hybrid finds a better route than
+    Story: map changed (amber flood) → Hybrid finds a better route than
     Classical when the advantage scenario holds under the live disruption.
+    Uses the active TrafficProvider (default: MockTrafficProvider).
     """
     st.session_state.pop("_nudge_disruption", None)
-    sc = _pick_advantage_scenario()
-    if sc is not None:
-        _apply_advantage_scenario(G, exits, sc)
-        near = st.session_state.get("start_node")
-        flood_params = _judge_flood_params(sc)
-        n = _set_flood_corridor(
-            G,
-            near_node=near,
-            seed=flood_params["seed"],
-            corridor_extra=flood_params["corridor_extra"],
-        )
-        # Restore curated exit after disruption refresh of ranking.
-        dest = sc.get("dest_node")
-        if dest is not None and dest in exits:
-            st.session_state["dest_node"] = dest
-            st.session_state["recommended_exit"] = dest
-            try:
-                _, ranking = recommend_best_exit(
-                    G,
-                    st.session_state["start_node"],
-                    exits,
-                    (
-                        float(st.session_state["epi_lon"]),
-                        float(st.session_state["epi_lat"]),
-                    ),
-                    edge_disruptions=st.session_state.get("edge_disruptions"),
-                )
-                st.session_state["exit_ranking"] = ranking
-            except Exception:
-                pass
+    try:
+        sc = _pick_advantage_scenario()
+        if sc is not None:
+            _apply_advantage_scenario(G, exits, sc)
+            near = st.session_state.get("start_node")
+            flood_params = _judge_flood_params(sc)
+            n = _set_flood_corridor(
+                G,
+                near_node=near,
+                seed=flood_params["seed"],
+                corridor_extra=flood_params["corridor_extra"],
+            )
+            # Restore curated exit after disruption refresh of ranking.
+            dest = sc.get("dest_node")
+            if dest is not None and dest in exits:
+                st.session_state["dest_node"] = dest
+                st.session_state["recommended_exit"] = dest
+                try:
+                    _, ranking = recommend_best_exit(
+                        G,
+                        st.session_state["start_node"],
+                        exits,
+                        (
+                            float(st.session_state["epi_lon"]),
+                            float(st.session_state["epi_lat"]),
+                        ),
+                        edge_disruptions=st.session_state.get("edge_disruptions"),
+                    )
+                    st.session_state["exit_ranking"] = ranking
+                except Exception:
+                    pass
+            else:
+                _refresh_exit_ranking(G, exits)
+            title = sc.get("title") or sc.get("id") or "advantage"
+            msg = (
+                f"Judge demo · {title} · Flooded corridor ({n} amber edges). "
+                "Finding safest & fastest route…"
+            )
         else:
+            # Fallback: disruption-heavy Ondoy-like setup without curated coords.
+            n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
             _refresh_exit_ranking(G, exits)
-        title = sc.get("title") or sc.get("id") or "advantage"
-        msg = (
-            f"Judge demo · {title} · Flooded corridor ({n} amber edges). "
-            "Finding safest & fastest route…"
-        )
-    else:
-        # Fallback: disruption-heavy Ondoy-like setup without curated coords.
-        n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
-        _refresh_exit_ranking(G, exits)
-        msg = (
-            f"Judge demo · Flooded corridor ({n} amber edges) near your start. "
-            "Finding safest & fastest route…"
-        )
+            msg = (
+                f"Judge demo · Flooded corridor ({n} amber edges) near your start. "
+                "Finding safest & fastest route…"
+            )
+    except TrafficNotConfiguredError as exc:
+        msg = str(exc)
+        st.session_state["map_status"] = msg
+        st.session_state.pop("_schedule_auto_run", None)
+        st.session_state["judge_demo_armed"] = False
+        return msg
     st.session_state["map_status"] = msg
     st.session_state["_schedule_auto_run"] = True
     st.session_state["judge_demo_armed"] = True
@@ -808,10 +847,12 @@ def _apply_map_click(G, exits, lat: float, lon: float) -> str:
 
 
 def main():
+    feed_info = get_traffic_provider().mode_info()
     st.markdown(
         '<div class="qr-header">'
         '<div class="qr-brand">Quantum<span>Relief</span></div>'
         '<span class="qr-online"><span class="dot"></span>Hybrid QML · Online</span>'
+        f"{_traffic_feed_badge_html()}"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -825,6 +866,8 @@ def main():
         "fastest route vs Classical and Dijkstra.</div>",
         unsafe_allow_html=True,
     )
+    if feed_info.mode == "live" and not feed_info.live_ready:
+        st.warning(feed_info.detail)
 
     qstat = quantum_status()
     pl_ok = qstat["pennylane_available"]
@@ -877,7 +920,7 @@ def main():
             else '<span class="qr-badge warn">PennyLane unavailable · Classical only</span>'
         )
         st.markdown(
-            f'<div class="qr-panel"><h3>Live Escape</h3>{badge}'
+            f'<div class="qr-panel"><h3>Live Escape</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
             "The map is always dynamic. One story for judges: "
             "<b style='color:#E8EEF6'>map changed → Hybrid finds a better route</b>."
@@ -945,7 +988,7 @@ def main():
             unsafe_allow_html=True,
         )
         st.caption(
-            "Amber dashed = soft live costs (simulated until TomTom / HERE)."
+            f"Amber dashed = soft live edge costs · feed: {traffic_mode_badge()}."
         )
 
         n_disrupted = _active_disruption_count()
@@ -964,11 +1007,14 @@ def main():
                 key="btn_congestion",
                 help="Soft ×5 weight on a short corridor (amber dashed)",
             ):
-                n = _set_random_disruption(G, soft_block=False)
-                _refresh_exit_ranking(G, exits)
-                st.session_state["map_status"] = (
-                    f"Congestion → {n} edges · amber soft weight ×5"
-                )
+                try:
+                    n = _set_random_disruption(G, soft_block=False)
+                    _refresh_exit_ranking(G, exits)
+                    st.session_state["map_status"] = (
+                        f"Congestion → {n} edges · amber soft weight ×5"
+                    )
+                except TrafficNotConfiguredError as exc:
+                    _handle_traffic_error(exc)
                 st.rerun()
         with dcol_b:
             if st.button(
@@ -978,11 +1024,14 @@ def main():
                 key="btn_soft_block",
                 help="Soft ×8 closed corridor (still passable — not a hard delete)",
             ):
-                n = _set_random_disruption(G, soft_block=True)
-                _refresh_exit_ranking(G, exits)
-                st.session_state["map_status"] = (
-                    f"Closed corridor (soft) → {n} edges · amber soft weight ×8"
-                )
+                try:
+                    n = _set_random_disruption(G, soft_block=True)
+                    _refresh_exit_ranking(G, exits)
+                    st.session_state["map_status"] = (
+                        f"Closed corridor (soft) → {n} edges · amber soft weight ×8"
+                    )
+                except TrafficNotConfiguredError as exc:
+                    _handle_traffic_error(exc)
                 st.rerun()
         if st.button(
             "Flooded corridor",
@@ -990,16 +1039,19 @@ def main():
             type="secondary",
             key="btn_flood",
             help=(
-                "Ondoy-like soft flood stand-in · ×12 on a coherent low-lying "
+                "Ondoy-like soft flood · ×12 on a coherent low-lying "
                 "corridor near your start"
             ),
         ):
-            n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
-            _refresh_exit_ranking(G, exits)
-            st.session_state["map_status"] = (
-                f"Flooded corridor → {n} edges · amber soft weight ×12 "
-                "(Ondoy-like stand-in)"
-            )
+            try:
+                n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
+                _refresh_exit_ranking(G, exits)
+                st.session_state["map_status"] = (
+                    f"Flooded corridor → {n} edges · amber soft weight ×12 "
+                    "(Ondoy-like)"
+                )
+            except TrafficNotConfiguredError as exc:
+                _handle_traffic_error(exc)
             st.rerun()
         if st.button(
             "Clear disruptions",
