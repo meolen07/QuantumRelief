@@ -1038,11 +1038,16 @@ def main():
             else:
                 st.session_state.pop("_step_reveal", None)
 
-            # Honest highlight: "win" only when Hybrid travel is strictly lower.
-            win = " win" if beats_classical else ""
+            # Honest HERO: only when Hybrid strictly beats Classical on travel,
+            # or travel-tie (≤2%) with higher safety. Never decorate a loss.
+            show_hero = bool(beats_classical or safety_win)
+            win = " win" if show_hero else ""
+            hero_pill = (
+                '<span class="qr-hero-pill">HERO</span>' if show_hero else ""
+            )
             st.markdown(
                 f'<div class="qr-card hybrid{win}">'
-                f'<span class="qr-hero-pill">HERO</span>'
+                f"{hero_pill}"
                 f'<div class="label">Hybrid travel</div>'
                 f'<div class="value accent">{qml_travel:.1f}</div>'
                 f'<div class="sub">Cyan · local quantum-classical</div></div>',
