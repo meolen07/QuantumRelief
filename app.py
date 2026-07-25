@@ -792,18 +792,20 @@ def main():
             classical_path = st.session_state.get("classical_path")
             dij_path = st.session_state.get("dij_path")
 
-            beats_classical = (
+            # Strict travel win only; within 2% counts as a tie (not a "beat").
+            beats_classical = False
+            ties_classical = False
+            if (
                 classical_path is not None
                 and classical_travel is not None
                 and reached
-                and (
-                    qml_travel <= float(classical_travel) * 1.02
-                    or (
-                        accuracy >= classical_accuracy
-                        and qml_travel <= float(classical_travel) * 1.08
+            ):
+                ct = float(classical_travel)
+                if ct > 1e-6:
+                    beats_classical = bool(qml_travel < ct)
+                    ties_classical = bool(
+                        not beats_classical and qml_travel <= ct * 1.02
                     )
-                )
-            )
             near_dij = (
                 dij_travel is not None
                 and dij_path
@@ -812,6 +814,8 @@ def main():
             )
             if narrative.get("hybrid_beats_classical") is not None:
                 beats_classical = bool(narrative["hybrid_beats_classical"])
+            if narrative.get("hybrid_ties_classical") is not None:
+                ties_classical = bool(narrative["hybrid_ties_classical"])
             if narrative.get("hybrid_near_dijkstra") is not None:
                 near_dij = bool(narrative["hybrid_near_dijkstra"])
 
@@ -876,19 +880,18 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            story = (
-                "Hybrid beats Classical · near Dijkstra"
-                if beats_classical and near_dij
-                else (
-                    "Hybrid beats Classical"
-                    if beats_classical
-                    else (
-                        "Hybrid approaches Dijkstra"
-                        if near_dij
-                        else f"{model_used} · local inference"
-                    )
-                )
-            )
+            if beats_classical and near_dij:
+                story = "Hybrid beats Classical · near Dijkstra"
+            elif ties_classical and near_dij:
+                story = "Hybrid ties Classical · near Dijkstra"
+            elif beats_classical:
+                story = "Hybrid beats Classical"
+            elif ties_classical:
+                story = "Hybrid ties Classical"
+            elif near_dij:
+                story = "Hybrid approaches Dijkstra"
+            else:
+                story = f"{model_used} · local inference"
             st.markdown(
                 f'<div class="qr-card{" win" if beats_classical or near_dij else ""}">'
                 f'<div class="label">Verdict</div>'
