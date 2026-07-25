@@ -41,20 +41,20 @@ From `data/retrain_report.json` — hard fine-tune (`λ_safe=0.35`, hard seeds) 
 | --- | --- | --- | --- |
 | Val accuracy | ≈ **0.883** | ≈ **0.886** | — |
 | Mean travel time | ≈ **13.65** | ≈ **14.40** | ≈ **12.29** |
-| Mean safety score | ≈ **0.89** | ≈ **0.87** | ≈ **0.94** |
+| Mean safety score (min-epi) | ≈ **0.49** | ≈ **0.45** | ≈ **0.56** |
 | Exit reached | **100%** | **100%** | **100%** |
 | Path overlap vs Dijkstra | ≈ **59.0%** | ≈ **49.3%** | — |
 | Quantum contribution | ≈ **77.6%** | — | — |
 
-Hybrid **mean travel ≤ Classical** (Δ ≈ −0.75) with **~78.6%** strict travel wins and **~78.6%** near Dijkstra. Mean safety also edges Classical. Serving: `models/film_hybrid.pt` (promoted from hardft).
+Hybrid **mean travel ≤ Classical** (Δ ≈ −0.75) with **~78.6%** strict travel wins and **~78.6%** near Dijkstra. Mean **min-epi** safety also edges Classical (Δ ≈ +0.04; ~53.6% trial safety wins). Serving: `models/film_hybrid.pt` (promoted from hardft).
 
-**Safety score** (path rollout, higher = safer):
+**Safety score** (path rollout, **min-epi based**, higher = safer; UI-scale ~0.05–2.0):
 
 ```
 safety_score = min_epi_km − 0.15 · mean(log1p(w_edge))
 ```
 
-- `min_epi_km` — closest km approach of any path node to the epicenter (primary; matches map rings)  
+- `min_epi_km` — closest km approach of any path node to the epicenter (**primary**; matches map rings)  
 - `mean_epi_km` — also reported; mean alone can mis-rank paths that dive near epi then run a long far tail  
 - `w_edge` — Algorithm-1 travel weight on each hop (light secondary hazard penalty)  
 - Training uses a related idea via `λ_safe · L_safe` in `src/safety_loss.py` (soft preference for safer next hops; Dijkstra CE stays primary)

@@ -27,16 +27,17 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 
 | Item | Status |
 | --- | --- |
-| `models/film_hybrid.pt` | **Trained** PHN (`demo_mode=False`, val_acc≈**0.922**, q≈**37.9%**) |
-| `models/film_classical.pt` | Trained Classical FiLM (val_acc≈**0.875**, 120 epochs) |
-| Dataset | 500 episodes · **9536** samples |
-| 3-way route smoke (24 trials) | Exit **100%** all engines · assist **0%** |
-| Mean travel time | Hybrid **9.78** · Classical **10.85** · Dijkstra **9.98** |
-| Hybrid beats Classical | **91.7%** of trials |
-| Hybrid near Dijkstra | **95.8%** of trials |
-| Path overlap vs Dijkstra | Hybrid **71.4%** · Classical **64.3%** |
+| `models/film_hybrid.pt` | **Promoted** hardft (`λ_safe=0.35`, val_acc≈**0.883**, q≈**77.6%**) |
+| `models/film_classical.pt` | Trained Classical FiLM (val_acc≈**0.886**) |
+| Dataset | 1000 episodes · **18932** hard samples |
+| 3-way route smoke (28 trials) | Exit **100%** all engines |
+| Mean travel time | Hybrid **13.65** · Classical **14.40** · Dijkstra **12.29** |
+| Hybrid beats Classical (travel) | **78.6%** of trials · mean travel ≤ Classical |
+| Mean safety (min-epi) | Hybrid **≈0.49** · Classical **≈0.45** · Dijkstra **≈0.56** |
+| Safety score | Path rollout: `min_epi_km − 0.15·mean(log1p(w))` (UI + report; not mean-epi) |
+| Path overlap vs Dijkstra | Hybrid **59.0%** · Classical **49.3%** |
 | Crisis UX | Cyan Hybrid · Gold Classical · Dashed Dijkstra |
-| UI | Escape-only B2G2C · no God View · no apartment presets |
+| UI | Escape-only B2G2C · travel + **safety** metrics · no God View |
 | API `POST /api/v1/calculate_route` | Hybrid + optional `classical` / `dijkstra` |
 | `runtime.txt` | `python-3.11` |
 
@@ -102,11 +103,11 @@ models/*_partial.pt
 ## Judge demo script (60s)
 
 1. Open Streamlit → **Escape** (only surface)
-2. **Click map** (or enter lat/lon) for your location → **Random epicenter**
+2. **Click map** for your location → **Random epicenter**
 3. Show **Best exit** one-liner (auto-recommended)
 4. Press **Find route** → cyan Hybrid · gold Classical · white dashed Dijkstra
-5. Scrub `t`; read Hybrid / Classical / Dijkstra travel times + Quantum Contribution
-6. Story: Hybrid beats Classical; Hybrid approaches Dijkstra with local inference only
+5. Scrub `t`; read Hybrid / Classical / Dijkstra **travel** + **safety** + Quantum Contribution
+6. Story: Hybrid beats Classical on travel (or travel-tie + safer); Hybrid approaches Dijkstra with local inference only
 
 ## Retrain (optional)
 
