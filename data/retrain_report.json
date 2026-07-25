@@ -1,18 +1,82 @@
 {
-  "hybrid_finish": {
-    "samples": 2000,
-    "epochs_quantum": 5,
-    "epochs_finetune": 3,
-    "val_acc": 0.9233333333333333,
-    "quantum_contrib_pct": 34.343596140982,
-    "demo_mode": false,
-    "elapsed_sec": 560.5,
-    "checkpoint": "models/film_hybrid.pt"
+  "n_samples": 18932,
+  "n_episodes": 1000,
+  "hard": true,
+  "hazard_intensity": 2.0,
+  "oversample": 8,
+  "n_hard_seeds": 5,
+  "classical": {
+    "train_acc": 0.8619811086254039,
+    "val_acc": 0.8855633802816901,
+    "val_loss": 0.3100727678604529,
+    "best_epoch": 91.0
   },
-  "route_smoke": {
-    "scenarios": 3,
-    "exit_reached": "3/3",
-    "assist": "0/3"
+  "hybrid": {
+    "phase_a_val_acc": 0.8895238095238095,
+    "phase_a_train_acc": 0.8568067226890757,
+    "best_val_loss": 0.2784194987728482,
+    "val_acc": 0.8895238095238095,
+    "train_acc": 0.8568067226890757,
+    "quantum_contrib_pct": 41.67093516581287
   },
-  "note": "Shorter complete Hybrid A+B train after Phase B battery interrupt; classical checkpoint retained from prior retrain."
+  "routes": {
+    "n_trials": 24,
+    "exit_reached_pct": {
+      "hybrid": 100.0,
+      "classical": 100.0,
+      "dijkstra": 100.0
+    },
+    "assist_pct": 0.0,
+    "mean_time": {
+      "hybrid": 10.373957742872317,
+      "classical": 9.831328382462347,
+      "dijkstra": 9.979987260901693
+    },
+    "mean_hops": {
+      "hybrid": 16.916666666666668,
+      "classical": 16.708333333333332,
+      "dijkstra": 19.791666666666668
+    },
+    "mean_overlap_pct": {
+      "hybrid": 57.36106026220849,
+      "classical": 63.50540934772665
+    },
+    "hybrid_beats_classical_pct": 83.33333333333333,
+    "hybrid_near_dijkstra_pct": 83.33333333333333,
+    "quantum_contrib_pct": 41.67093516581287,
+    "sample_trials": [
+      {
+        "hybrid_time": 17.952223444181403,
+        "classical_time": 17.952223444181403,
+        "dijkstra_time": 20.54788258945535
+      },
+      {
+        "hybrid_time": 7.355342490379057,
+        "classical_time": 7.261011194228791,
+        "dijkstra_time": 7.261011194228791
+      },
+      {
+        "hybrid_time": 15.053758013717594,
+        "classical_time": 15.053758013717594,
+        "dijkstra_time": 17.734789573245276
+      }
+    ]
+  },
+  "tagline": "Hybrid delivers near-Dijkstra quality with quantum-classical local inference",
+  "elapsed_sec": 1754.6,
+  "checkpoints": {
+    "classical": "/Users/nguyenhuynhmailinh/QuantumRelief/models/film_classical.pt",
+    "hybrid": "/Users/nguyenhuynhmailinh/QuantumRelief/models/film_hybrid.pt",
+    "dataset": "/Users/nguyenhuynhmailinh/QuantumRelief/data/routing_dataset.npz",
+    "hard_seeds": "/Users/nguyenhuynhmailinh/QuantumRelief/data/hard_seeds.json"
+  },
+  "train_config": {
+    "classical_epochs": 100,
+    "hybrid_phase_a": 10,
+    "hybrid_phase_b": 6,
+    "hybrid_max_samples": 3500,
+    "hard": true,
+    "hazard_intensity": 2.0,
+    "oversample": 8
+  }
 }
