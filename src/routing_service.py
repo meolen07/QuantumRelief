@@ -1,8 +1,10 @@
 """
-Shared escape-routing helpers for Streamlit (app.py) and FastAPI (api.py).
+Shared dynamic-edge routing helpers for Streamlit (app.py) and FastAPI (api.py).
 
-Hybrid QML is the hero engine; Classical FiLM is an ablation; Dijkstra is the
-full-information optimal baseline under Algorithm 1 dynamics.
+What we solve: static shortest path fails when edge costs change. Disaster
+hazard rings are the extreme case; traffic / closures are the everyday case.
+Same engine for both — Algorithm 1 dynamic weights + Hybrid FiLM∥PHN hero,
+Classical FiLM ablation, Dijkstra full-information oracle.
 """
 
 from __future__ import annotations
@@ -15,7 +17,10 @@ import networkx as nx
 import numpy as np
 
 from src.dataset_generation import build_input_vector, dijkstra_next_node
-from src.dynamic_simulation import DynamicEnvironment
+from src.dynamic_simulation import (
+    DynamicEnvironment,
+    apply_edge_disruptions,
+)
 from src.film_model import ensure_trained_model, predict_logits
 from src.graph_setup import load_or_build_graph, select_exit_nodes
 from src.quantum_hybrid import (
@@ -167,6 +172,13 @@ def _complete_with_dijkstra(env, path, dest, radii_trace, max_steps: int):
     return hops
 
 
+def _graph_with_disruptions(G, edge_disruptions=None):
+    """Copy graph and apply optional soft edge disruptions before Algorithm 1."""
+    H = G.copy()
+    applied = apply_edge_disruptions(H, edge_disruptions)
+    return H, applied
+
+
 def predict_escape_route(
     G,
     model,
@@ -176,9 +188,14 @@ def predict_escape_route(
     dest,
     epicenter_lonlat,
     max_steps: Optional[int] = None,
+    edge_disruptions=None,
 ):
     """
     Roll out Hybrid / Classical FiLM under Algorithm 1 dynamics.
+
+    Optional ``edge_disruptions`` (EdgeDisruptionSet / serializable dict /
+    edge list) apply soft high-weight penalties before epicenter dynamics —
+    stand-in for traffic / closures until live feeds.
 
     Neighbor selection masks padded degree slots to -inf, prefers unvisited
     neighbors to avoid cycles, and completes with Dijkstra if the ML policy
@@ -197,8 +214,9 @@ def predict_escape_route(
     if max_steps is None:
         max_steps = max(40, min(80, n_nodes // 2))
 
+    G_dyn, disrupted = _graph_with_disruptions(G, edge_disruptions)
     env = DynamicEnvironment(
-        G=G.copy(),
+        G=G_dyn,
         epicenter_lonlat=epicenter_lonlat,
         exit_nodes=[dest],
     )
@@ -301,6 +319,7 @@ def predict_escape_route(
         "assist_reason": assist_reason,
         "max_steps": max_steps,
         "hops": max(0, len(path) - 1),
+        "disrupted_edges": len(disrupted),
     }
     return path, radii_trace, env, travel, sample_x, meta
 
@@ -311,15 +330,19 @@ def dijkstra_escape_route(
     dest,
     epicenter_lonlat,
     max_steps: int = 120,
+    edge_disruptions=None,
 ):
     """
     Classical optimal baseline: node-wise Dijkstra under the same Algorithm 1
     dynamics (full dynamic edge weights — not available to local ML policies).
+
+    Optional soft ``edge_disruptions`` stack with epicenter / exit rings.
     """
     if start not in G or dest not in G:
         raise ValueError("Start or exit node is not on the Manila graph.")
+    G_dyn, disrupted = _graph_with_disruptions(G, edge_disruptions)
     env = DynamicEnvironment(
-        G=G.copy(),
+        G=G_dyn,
         epicenter_lonlat=epicenter_lonlat,
         exit_nodes=[dest],
     )
@@ -347,6 +370,7 @@ def dijkstra_escape_route(
         "reached": path[-1] == dest,
         "hops": max(0, len(path) - 1),
         "engine": "dijkstra",
+        "disrupted_edges": len(disrupted),
     }
     return path, radii_trace, env, travel, meta
 
@@ -478,6 +502,7 @@ def rank_evacuate_areas(
     max_steps: int = 120,
     time_weight: float = 0.55,
     safety_weight: float = 0.45,
+    edge_disruptions=None,
 ) -> List[Dict[str, Any]]:
     """
     Rank candidate evacuate areas by safest + fastest.
@@ -485,6 +510,7 @@ def rank_evacuate_areas(
     Uses Dijkstra under Algorithm 1 dynamics for travel time (fast, honest).
     Safety = km distance of the exit node from the epicenter.
     Combined score ∈ [0, 100] — higher is better. Best exit is index 0.
+    Optional soft edge disruptions apply to every candidate the same way.
     """
     origin = get_graph_origin(G)
     rows: List[Dict[str, Any]] = []
@@ -493,7 +519,12 @@ def rank_evacuate_areas(
             continue
         try:
             path, _radii, _env, travel, meta = dijkstra_escape_route(
-                G, start, ex, epicenter_lonlat, max_steps=max_steps
+                G,
+                start,
+                ex,
+                epicenter_lonlat,
+                max_steps=max_steps,
+                edge_disruptions=edge_disruptions,
             )
         except Exception:
             path, travel, meta = [], float("inf"), {"reached": False, "hops": 0}
@@ -691,10 +722,12 @@ def compare_three_way(
     max_steps: Optional[int] = None,
     include_classical: bool = True,
     include_dijkstra: bool = True,
+    edge_disruptions=None,
 ) -> Dict[str, Any]:
     """
     Run Hybrid (always) + optional Classical FiLM + Dijkstra under the same
-    start / exit / epicenter. Travel times are honest path sums — never forged.
+    start / exit / epicenter (and optional soft edge disruptions). Travel
+    times are honest path sums — never forged.
 
     Also records wall-clock inference / path latency (ms) per engine for the
     demo metrics panel. Hybrid on ``default.qubit`` is slower; a real QPU is
@@ -712,6 +745,7 @@ def compare_three_way(
         dest,
         epicenter_lonlat,
         max_steps=max_steps,
+        edge_disruptions=edge_disruptions,
     )
     hybrid_ms = (_time.perf_counter() - t0) * 1000.0
     q_contrib = estimate_quantum_contribution_pct(hybrid_model, sample_x)
@@ -738,6 +772,7 @@ def compare_three_way(
             dest,
             epicenter_lonlat,
             max_steps=max_steps,
+            edge_disruptions=edge_disruptions,
         )
         classical_ms = (_time.perf_counter() - t0) * 1000.0
         classical_summary = {
@@ -757,7 +792,11 @@ def compare_three_way(
     if include_dijkstra:
         t0 = _time.perf_counter()
         d_path, _d_r, d_env, d_travel, d_meta = dijkstra_escape_route(
-            G, start, dest, epicenter_lonlat
+            G,
+            start,
+            dest,
+            epicenter_lonlat,
+            edge_disruptions=edge_disruptions,
         )
         dijkstra_ms = (_time.perf_counter() - t0) * 1000.0
         dijkstra_summary = {

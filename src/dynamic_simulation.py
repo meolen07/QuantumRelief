@@ -4,18 +4,230 @@ Phase 2 — Dynamic Environment Simulation.
 Implements paper Algorithm 1 (Subsequent weight update) and the
 earthquake / traffic radius & weight-penalty formulas from Sec. II C.
 Geography adapted from Furubira → Manila (Intramuros).
+
+Product framing: these rings are an extreme dynamic-hazard regime. The same
+changing-edge idea covers everyday traffic, closures, and congestion; live
+feeds (TomTom / HERE) are a roadmap plug-in, not wired here. Escape can apply
+``EdgeDisruptionSet`` soft penalties as a traffic/closure stand-in.
 """
 
 from __future__ import annotations
 
-import copy
 import math
+import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import networkx as nx
 
 from .utils import Coord, edge_midpoint, get_graph_origin, project_local_km
+
+# Soft congestion / soft-block multiplier (Algorithm-1 spirit: prefer high
+# weight over hard removal so routing still reaches an exit).
+DISRUPTION_SOFT_MULT = 5.0
+DISRUPTION_SOFT_BLOCK_MULT = 8.0
+
+
+def _edge_key(u: Any, v: Any) -> Tuple[Any, Any]:
+    return tuple(sorted((u, v)))
+
+
+@dataclass
+class EdgeDisruptionSet:
+    """
+    Localized road disruption (traffic jam / soft closure stand-in).
+
+    Edges keep connectivity; travel weights are multiplied so Hybrid /
+    Classical / Dijkstra all see the same soft cost — same spirit as
+    Algorithm 1 soft penalties. Live TomTom / HERE feeds are roadmap.
+    """
+
+    edges: List[Tuple[Any, Any]] = field(default_factory=list)
+    multiplier: float = DISRUPTION_SOFT_MULT
+    seed: Optional[int] = None
+    kind: str = "congestion"  # congestion | soft_block
+
+    def normalized_edges(self) -> List[Tuple[Any, Any]]:
+        seen = set()
+        out: List[Tuple[Any, Any]] = []
+        for u, v in self.edges:
+            key = _edge_key(u, v)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+        return out
+
+    def to_serializable(self) -> Dict[str, Any]:
+        return {
+            "edges": [[u, v] for u, v in self.normalized_edges()],
+            "multiplier": float(self.multiplier),
+            "seed": self.seed,
+            "kind": self.kind,
+        }
+
+    @classmethod
+    def from_serializable(cls, raw: Optional[Dict[str, Any]]) -> Optional["EdgeDisruptionSet"]:
+        if not raw:
+            return None
+        edges_raw = raw.get("edges") or []
+        edges = []
+        for pair in edges_raw:
+            if pair is None or len(pair) < 2:
+                continue
+            edges.append((pair[0], pair[1]))
+        if not edges:
+            return None
+        return cls(
+            edges=edges,
+            multiplier=float(raw.get("multiplier", DISRUPTION_SOFT_MULT)),
+            seed=raw.get("seed"),
+            kind=str(raw.get("kind", "congestion")),
+        )
+
+
+def sample_random_disruptions(
+    G: nx.Graph,
+    *,
+    n_seed_edges: int = 1,
+    corridor_extra: int = 3,
+    multiplier: float = DISRUPTION_SOFT_MULT,
+    soft_block: bool = False,
+    seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
+) -> EdgeDisruptionSet:
+    """
+    Pick 1–few seed edges and grow a small corridor of adjacent edges.
+
+    Soft high-weight penalties (not hard deletes) so paths remain feasible.
+    """
+    if rng is None:
+        rng = random.Random(seed)
+
+    undirected = [(u, v) for u, v in G.edges()]
+    if not undirected:
+        return EdgeDisruptionSet(edges=[], multiplier=multiplier, seed=seed)
+
+    n_seed = max(1, min(int(n_seed_edges), len(undirected)))
+    seeds = rng.sample(undirected, n_seed)
+    selected: Dict[Tuple[Any, Any], Tuple[Any, Any]] = {}
+    for u, v in seeds:
+        selected[_edge_key(u, v)] = (u, v)
+
+    # Grow a local corridor: repeatedly add a random unused neighbor edge
+    # of an already selected edge (BFS-ish expansion).
+    extra = max(0, int(corridor_extra))
+    frontier = list(seeds)
+    attempts = 0
+    while extra > 0 and frontier and attempts < len(undirected) * 4:
+        attempts += 1
+        bu, bv = frontier[rng.randrange(len(frontier))]
+        candidates = []
+        for node in (bu, bv):
+            for nb in G.neighbors(node):
+                key = _edge_key(node, nb)
+                if key not in selected:
+                    candidates.append((node, nb))
+        if not candidates:
+            # Drop this frontier edge and try another
+            frontier = [e for e in frontier if e != (bu, bv)]
+            if not frontier:
+                frontier = list(selected.values())
+            continue
+        nu, nv = candidates[rng.randrange(len(candidates))]
+        selected[_edge_key(nu, nv)] = (nu, nv)
+        frontier.append((nu, nv))
+        extra -= 1
+
+    mult = float(DISRUPTION_SOFT_BLOCK_MULT if soft_block else multiplier)
+    kind = "soft_block" if soft_block else "congestion"
+    return EdgeDisruptionSet(
+        edges=list(selected.values()),
+        multiplier=mult,
+        seed=seed,
+        kind=kind,
+    )
+
+
+def apply_edge_disruptions(
+    G: nx.Graph,
+    disruptions: Optional[
+        Union[EdgeDisruptionSet, Sequence[Tuple[Any, Any]], Dict[str, Any]]
+    ] = None,
+    *,
+    multiplier: Optional[float] = None,
+) -> List[Tuple[Any, Any]]:
+    """
+    Apply soft weight penalties in-place. Returns the list of affected edges.
+
+    Prefer soft high multipliers over removing edges so Dijkstra / ML policies
+    can still route around congestion.
+    """
+    if disruptions is None:
+        return []
+
+    if isinstance(disruptions, dict):
+        dset = EdgeDisruptionSet.from_serializable(disruptions)
+        if dset is None:
+            return []
+    elif isinstance(disruptions, EdgeDisruptionSet):
+        dset = disruptions
+    else:
+        dset = EdgeDisruptionSet(
+            edges=list(disruptions),
+            multiplier=float(multiplier or DISRUPTION_SOFT_MULT),
+        )
+
+    mult = float(multiplier if multiplier is not None else dset.multiplier)
+    mult = max(mult, 1.0)
+    applied: List[Tuple[Any, Any]] = []
+    for u, v in dset.normalized_edges():
+        if not G.has_edge(u, v):
+            # Try original orientation if undirected key differs from MultiGraph
+            if G.has_edge(v, u):
+                u, v = v, u
+            else:
+                continue
+        data = G.edges[u, v]
+        w0 = float(data.get("weight", data.get("travel_time", 1.0)))
+        data["weight"] = w0 * mult
+        data["travel_time"] = data["weight"]
+        data["disrupted"] = True
+        data["disruption_mult"] = mult
+        applied.append((u, v))
+    return applied
+
+
+def disruption_edge_latlons(
+    G: nx.Graph,
+    disruptions: Optional[
+        Union[EdgeDisruptionSet, Sequence[Tuple[Any, Any]], Dict[str, Any]]
+    ],
+) -> List[List[List[float]]]:
+    """Folium PolyLine coords ``[[lat, lon], [lat, lon]]`` per disrupted edge."""
+    if disruptions is None:
+        return []
+    if isinstance(disruptions, dict):
+        dset = EdgeDisruptionSet.from_serializable(disruptions)
+    elif isinstance(disruptions, EdgeDisruptionSet):
+        dset = disruptions
+    else:
+        dset = EdgeDisruptionSet(edges=list(disruptions))
+    if dset is None:
+        return []
+    coords: List[List[List[float]]] = []
+    for u, v in dset.normalized_edges():
+        if not G.has_edge(u, v) and not G.has_edge(v, u):
+            continue
+        if u not in G.nodes or v not in G.nodes:
+            continue
+        coords.append(
+            [
+                [float(G.nodes[u]["y"]), float(G.nodes[u]["x"])],
+                [float(G.nodes[v]["y"]), float(G.nodes[v]["x"])],
+            ]
+        )
+    return coords
 
 
 def damage_radius(t: float, intensity: float = 1.0) -> float:
