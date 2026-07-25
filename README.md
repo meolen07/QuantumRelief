@@ -51,12 +51,13 @@ Hybrid **mean travel ≤ Classical** (Δ ≈ −0.75) with **~78.6%** strict tra
 **Safety score** (path rollout, higher = safer):
 
 ```
-safety_score = mean_epi_km − 0.35 · mean(log1p(w_edge))
+safety_score = min_epi_km − 0.15 · mean(log1p(w_edge))
 ```
 
-- `mean_epi_km` — mean km distance of path nodes to the epicenter  
-- `w_edge` — Algorithm-1 travel weight on each hop (hazard inflation)  
-- Training uses the same idea via `λ_safe · L_safe` in `src/safety_loss.py` (soft preference for safer next hops; Dijkstra CE stays primary)
+- `min_epi_km` — closest km approach of any path node to the epicenter (primary; matches map rings)  
+- `mean_epi_km` — also reported; mean alone can mis-rank paths that dive near epi then run a long far tail  
+- `w_edge` — Algorithm-1 travel weight on each hop (light secondary hazard penalty)  
+- Training uses a related idea via `λ_safe · L_safe` in `src/safety_loss.py` (soft preference for safer next hops; Dijkstra CE stays primary)
 
 **Promotion rule:** copy candidate → `film_hybrid.pt` only when mean travel ≤ Classical, **or** travel within 2% of Classical **and** mean safety clearly higher.
 

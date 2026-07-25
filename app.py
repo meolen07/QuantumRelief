@@ -516,6 +516,9 @@ def _clear_route_results():
         "classical_safety",
         "dij_safety",
         "qml_mean_epi_km",
+        "qml_min_epi_km",
+        "classical_min_epi_km",
+        "dij_min_epi_km",
         "sample_x",
         "q_contrib",
         "accuracy",
@@ -885,6 +888,29 @@ def main():
                                     "mean_epi_km", float("nan")
                                 )
                             ),
+                            "qml_min_epi_km": float(
+                                (h.get("safety") or {}).get(
+                                    "min_epi_km", float("nan")
+                                )
+                            ),
+                            "classical_min_epi_km": (
+                                float(
+                                    (cmp["classical"].get("safety") or {}).get(
+                                        "min_epi_km", float("nan")
+                                    )
+                                )
+                                if cmp.get("classical")
+                                else None
+                            ),
+                            "dij_min_epi_km": (
+                                float(
+                                    (cmp["dijkstra"].get("safety") or {}).get(
+                                        "min_epi_km", float("nan")
+                                    )
+                                )
+                                if cmp.get("dijkstra")
+                                else None
+                            ),
                             "sample_x": sample_x,
                             "q_contrib": q_contrib,
                             "accuracy": accuracy,
@@ -1049,6 +1075,14 @@ def main():
                 except (TypeError, ValueError):
                     return "—"
 
+            h_min_epi = st.session_state.get("qml_min_epi_km")
+            c_min_epi = st.session_state.get("classical_min_epi_km")
+            d_min_epi = st.session_state.get("dij_min_epi_km")
+            min_epi_sub = (
+                f"min epi {_fmt_safe(h_min_epi)} / {_fmt_safe(c_min_epi)} / "
+                f"{_fmt_safe(d_min_epi)} km · higher score = farther"
+            )
+
             s_win = " win" if safer_than_classical else ""
             st.markdown(
                 f'<div class="qr-card hybrid{s_win}">'
@@ -1059,7 +1093,7 @@ def main():
                 f'<span class="gold">{_fmt_safe(classical_safety)}</span>'
                 f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
                 f'<span class="dij">{_fmt_safe(dij_safety)}</span></div>'
-                f'<div class="sub">Higher = farther from epi − hazard cost</div></div>',
+                f'<div class="sub">{min_epi_sub}</div></div>',
                 unsafe_allow_html=True,
             )
 
