@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import random
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
@@ -403,6 +403,91 @@ def select_exit_nodes(
             break
         exits.append(best)
     return exits
+
+
+# Intramuros-area landmark names by compass sector (graph has no OSM POI tags).
+_LANDMARK_BY_SECTOR = {
+    "N": ("Fort Santiago / North Gate", "North walls · Fort Santiago approach"),
+    "NE": ("Pasig riverside · NE", "Northeast toward Pasig River"),
+    "E": ("East walls / Victoria", "East walls corridor · Victoria side"),
+    "SE": ("Padre Burgos · SE", "Southeast approach · Padre Burgos"),
+    "S": ("South walls / Burgos", "South walls · toward Padre Burgos"),
+    "SW": ("Muralla · SW", "Southwest walls corridor"),
+    "W": ("Maestranza / Bay side", "West walls · Maestranza / bay side"),
+    "NW": ("North Gate · NW", "Northwest · North Gate approach"),
+}
+
+
+def _compass_sector(lon: float, lat: float, lon0: float, lat0: float) -> str:
+    """8-way sector of (lon, lat) relative to graph center."""
+    import math
+
+    dx = float(lon) - float(lon0)
+    dy = float(lat) - float(lat0)
+    # Lon degrees stretch east-west; rough equal weight is fine for naming.
+    ang = math.degrees(math.atan2(dy, dx))  # 0 = east, 90 = north
+    if -22.5 <= ang < 22.5:
+        return "E"
+    if 22.5 <= ang < 67.5:
+        return "NE"
+    if 67.5 <= ang < 112.5:
+        return "N"
+    if 112.5 <= ang < 157.5:
+        return "NW"
+    if ang >= 157.5 or ang < -157.5:
+        return "W"
+    if -157.5 <= ang < -112.5:
+        return "SW"
+    if -112.5 <= ang < -67.5:
+        return "S"
+    return "SE"
+
+
+def name_exit_landmark(G: nx.Graph, node, *, index: int = 1) -> Dict[str, Any]:
+    """
+    Human label for an escape exit / landmark on the Intramuros graph.
+
+    Names are compass-based stand-ins (Fort Santiago, Pasig, walls, Burgos)
+    — the cached GraphML has no POI tags.
+    """
+    xs = [float(G.nodes[n]["x"]) for n in G.nodes()]
+    ys = [float(G.nodes[n]["y"]) for n in G.nodes()]
+    lon0 = sum(xs) / len(xs)
+    lat0 = sum(ys) / len(ys)
+    lon = float(G.nodes[node]["x"])
+    lat = float(G.nodes[node]["y"])
+    sector = _compass_sector(lon, lat, lon0, lat0)
+    short, blurb = _LANDMARK_BY_SECTOR.get(
+        sector, (f"Perimeter exit {index}", "Intramuros perimeter")
+    )
+    return {
+        "node": node,
+        "label": short,
+        "blurb": blurb,
+        "sector": sector,
+        "lat": lat,
+        "lon": lon,
+        "index": int(index),
+    }
+
+
+def named_escape_landmarks(
+    G: nx.Graph, exits: Optional[Sequence] = None
+) -> List[Dict[str, Any]]:
+    """Short list of named exits/landmarks for Live Escape destination UI."""
+    if exits is None:
+        exits = select_exit_nodes(G, n_exits=3, seed=42)
+    out: List[Dict[str, Any]] = []
+    used_labels: set = set()
+    for i, ex in enumerate(exits, start=1):
+        info = name_exit_landmark(G, ex, index=i)
+        label = info["label"]
+        if label in used_labels:
+            label = f"{label} · exit {i}"
+            info["label"] = label
+        used_labels.add(label)
+        out.append(info)
+    return out
 
 
 def euclid_lonlat(G, a, b) -> float:

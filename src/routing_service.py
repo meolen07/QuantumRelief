@@ -25,7 +25,11 @@ from src.traffic_provider import (
     resolve_traffic_mode,
 )
 from src.film_model import ensure_trained_model, predict_logits
-from src.graph_setup import load_or_build_graph, select_exit_nodes
+from src.graph_setup import (
+    load_or_build_graph,
+    name_exit_landmark,
+    select_exit_nodes,
+)
 from src.quantum_hybrid import (
     estimate_quantum_contribution_pct,
     ensure_hybrid_model,
@@ -534,10 +538,15 @@ def rank_evacuate_areas(
         reached = bool(meta.get("reached")) and bool(path) and path[-1] == ex
         safety = exit_safety_km(G, ex, epicenter_lonlat, origin=origin)
         length = path_length_km(G, path, origin=origin) if path else 0.0
+        try:
+            landmark = name_exit_landmark(G, ex, index=i + 1)
+            exit_label = str(landmark.get("label") or f"Exit {i + 1}")
+        except Exception:
+            exit_label = f"Evacuate area {i + 1}"
         rows.append(
             {
                 "exit_node": ex,
-                "label": f"Evacuate area {i + 1}",
+                "label": exit_label,
                 "index": i + 1,
                 "travel_time": float(travel) if reached else float("inf"),
                 "safety_km": float(safety),

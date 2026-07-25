@@ -517,10 +517,11 @@ def train_hybrid_model(
     )
     q_raw = float(estimate_quantum_contribution_pct(model) or 0.0)
     metrics["quantum_contrib_pct_pre_rebalance"] = q_raw
-    # If combine still drifted high, soft-pull toward the route-stable mix
-    if q_raw > 65.0:
+    # Only soft-pull when quantum share is extreme; mid-60s rebalance
+    # previously hurt mean travel vs Classical on hard eval.
+    if q_raw > 82.0:
         q_bal = soft_rebalance_combine(
-            model, target_quantum_mix=target_mix, blend=0.65
+            model, target_quantum_mix=target_mix, blend=0.45
         )
         metrics["combine_rebalanced"] = True
         metrics["quantum_contrib_pct"] = q_bal

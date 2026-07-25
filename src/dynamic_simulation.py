@@ -5,10 +5,10 @@ Implements paper Algorithm 1 (Subsequent weight update) and the
 earthquake / traffic radius & weight-penalty formulas from Sec. II C.
 Geography adapted from Furubira → Manila (Intramuros).
 
-Product framing: these rings are an extreme dynamic-hazard regime. The same
-changing-edge idea covers everyday traffic, closures, and congestion; live
-feeds (TomTom / HERE) are a roadmap plug-in, not wired here. Escape can apply
-``EdgeDisruptionSet`` soft penalties as a traffic/closure stand-in.
+Product framing: these rings are an extreme dynamic-hazard regime. Everyday
+traffic / closures / congestion enter through ``src.traffic_provider``
+(``MockTrafficProvider`` in demo, ``LiveTrafficProvider`` stub for production).
+Escape applies ``EdgeDisruptionSet`` soft penalties from that provider.
 """
 
 from __future__ import annotations

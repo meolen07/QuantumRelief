@@ -5,7 +5,8 @@ Demo mode ships a **named conditions snapshot** — same shape production would
 get from TomTom / HERE — so Live Escape can open on “current road conditions”
 without paid API calls.
 
-Scenarios rotate on a deterministic time bucket (feels live; reproducible).
+Scenarios rotate by **Manila time-of-day** (morning / rush / evening / night)
+plus a deterministic wall-clock bucket (feels live; reproducible).
 The Quantathon judge flood pin is one catalog entry (``judge_flood``).
 """
 
@@ -34,18 +35,41 @@ DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
 # Rotate “live” bucket every N minutes (deterministic seed from wall clock).
 FEED_BUCKET_MINUTES = 5
 
+# Manila civic clock for time-of-day scenario pools.
+MANILA_TZ = "Asia/Manila"
+
 # Human-facing catalog — ids are stable; seeds / params drive edge sampling.
+# Labels lean on Intramuros geography the graph can support (Pasig, Fort,
+# walls corridor, Padre Burgos) — no POI geocoding.
 SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
     {
-        "id": "rush_hour_arterial",
-        "name": "Rush-hour congestion",
-        "blurb": "Peak traffic on Intramuros arterials.",
+        "id": "quiet_morning",
+        "name": "Quiet morning · light jam",
+        "blurb": "Mild congestion on plaza-rim lanes — baseline civic morning.",
+        "periods": ("morning", "night"),
         "incidents": (
             {
                 "kind": "congestion",
-                "label": "Congestion on arterial",
+                "label": "Light congestion · plaza rim",
+                "severity": 0.3,
+                "area_hint": "Central plaza / municipal core",
+                "corridor_extra": 2,
+                "n_seed_edges": 1,
+                "seed_offset": 40,
+            },
+        ),
+    },
+    {
+        "id": "rush_hour_arterial",
+        "name": "Rush-hour · Fort / Burgos arterials",
+        "blurb": "Peak traffic on Intramuros approaches (Fort Santiago · Burgos).",
+        "periods": ("rush", "evening"),
+        "incidents": (
+            {
+                "kind": "congestion",
+                "label": "Congestion · Fort / Padre Burgos approach",
                 "severity": 0.55,
-                "area_hint": "Intramuros core",
+                "area_hint": "North Gate · Fort Santiago corridor",
                 "corridor_extra": 4,
                 "n_seed_edges": 1,
                 "seed_offset": 101,
@@ -54,29 +78,48 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
     },
     {
         "id": "flood_pasig",
-        "name": "Flood watch · Pasig corridor",
-        "blurb": "Soft flood stand-in on a low-lying corridor (Ondoy-like ×12).",
+        "name": "Flood watch · Pasig riverside",
+        "blurb": "Soft flood stand-in on Pasig-side low ground (Ondoy-like ×12).",
+        "periods": ("morning", "rush", "evening", "night"),
         "incidents": (
             {
                 "kind": "flood",
-                "label": "Flooded corridor near Pasig",
+                "label": "Flooded corridor · Pasig riverside",
                 "severity": 0.9,
-                "area_hint": "Pasig-side low ground",
+                "area_hint": "Pasig River · east / northeast low ground",
                 "corridor_extra": 11,
                 "seed_offset": 17025,
             },
         ),
     },
     {
+        "id": "closure_walls",
+        "name": "Soft closure · walls corridor",
+        "blurb": "Temporary soft-closed stretch along the historic walls.",
+        "periods": ("midday", "night"),
+        "incidents": (
+            {
+                "kind": "soft_block",
+                "label": "Closed corridor · Intramuros walls",
+                "severity": 0.75,
+                "area_hint": "Muralla / walls corridor",
+                "corridor_extra": 5,
+                "n_seed_edges": 1,
+                "seed_offset": 220,
+            },
+        ),
+    },
+    {
         "id": "closure_historic",
         "name": "Temporary corridor closure",
-        "blurb": "Soft closed corridor (still passable at high weight).",
+        "blurb": "Soft closed corridor in the historic core (still passable).",
+        "periods": ("midday", "night"),
         "incidents": (
             {
                 "kind": "soft_block",
                 "label": "Closed corridor · historic core",
                 "severity": 0.75,
-                "area_hint": "Intramuros walls",
+                "area_hint": "Intramuros walls · historic core",
                 "corridor_extra": 5,
                 "n_seed_edges": 1,
                 "seed_offset": 220,
@@ -85,23 +128,24 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
     },
     {
         "id": "mixed_evening",
-        "name": "Evening mix · jam + closure",
-        "blurb": "Congestion plus a soft closure elsewhere on the grid.",
+        "name": "Evening mix · jam + walls closure",
+        "blurb": "North Gate congestion plus a soft closure on east wall lanes.",
+        "periods": ("evening",),
         "incidents": (
             {
                 "kind": "congestion",
-                "label": "Congestion on arterial",
+                "label": "Congestion · North Gate approach",
                 "severity": 0.5,
-                "area_hint": "North gate approach",
+                "area_hint": "North Gate · Fort Santiago approach",
                 "corridor_extra": 3,
                 "n_seed_edges": 1,
                 "seed_offset": 330,
             },
             {
                 "kind": "soft_block",
-                "label": "Soft closure · side street",
+                "label": "Soft closure · east wall lanes",
                 "severity": 0.65,
-                "area_hint": "East wall lanes",
+                "area_hint": "East walls / Victoria corridor",
                 "corridor_extra": 3,
                 "n_seed_edges": 1,
                 "seed_offset": 331,
@@ -109,18 +153,19 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
         ),
     },
     {
-        "id": "quiet_morning",
-        "name": "Quiet morning · light jam",
-        "blurb": "Mild congestion only — baseline city day.",
+        "id": "night_quiet",
+        "name": "Night · sparse traffic",
+        "blurb": "Light overnight jam; corridors mostly clear.",
+        "periods": ("night",),
         "incidents": (
             {
                 "kind": "congestion",
-                "label": "Light congestion",
-                "severity": 0.3,
-                "area_hint": "Central plaza rim",
+                "label": "Sparse night traffic",
+                "severity": 0.2,
+                "area_hint": "Intramuros core · overnight",
                 "corridor_extra": 2,
                 "n_seed_edges": 1,
-                "seed_offset": 40,
+                "seed_offset": 55,
             },
         ),
     },
@@ -129,12 +174,13 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
         "name": "Judge demo · flooded corridor",
         "blurb": "Pinned Quantathon flood seed (Hybrid travel-win corridor).",
         "judge_pin": True,
+        "periods": (),
         "incidents": (
             {
                 "kind": "flood",
-                "label": "Flooded corridor near Pasig",
+                "label": "Flooded corridor · Pasig riverside",
                 "severity": 0.95,
-                "area_hint": "Judge-pinned flood",
+                "area_hint": "Judge-pinned flood · Pasig side",
                 "corridor_extra": 11,
                 "seed_offset": 17025,
             },
@@ -142,9 +188,62 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
     },
 )
 
+# Preferred catalog ids per Manila time-of-day (judge_flood excluded).
+TIME_OF_DAY_POOLS: Dict[str, Tuple[str, ...]] = {
+    "morning": ("quiet_morning", "flood_pasig", "closure_historic"),
+    "rush": ("rush_hour_arterial", "flood_pasig", "closure_walls"),
+    "midday": ("rush_hour_arterial", "closure_walls", "closure_historic", "flood_pasig"),
+    "evening": ("mixed_evening", "rush_hour_arterial", "flood_pasig"),
+    "night": ("night_quiet", "closure_historic", "flood_pasig", "quiet_morning"),
+}
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _to_manila(when: Optional[datetime] = None) -> datetime:
+    """Wall clock in Asia/Manila (falls back to UTC+8 if zoneinfo missing)."""
+    when = when or _utc_now()
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+
+        return when.astimezone(ZoneInfo(MANILA_TZ))
+    except Exception:
+        from datetime import timedelta
+
+        return when.astimezone(timezone(timedelta(hours=8)))
+
+
+def time_of_day_period(when: Optional[datetime] = None) -> str:
+    """
+    Manila civic period for scenario pools.
+
+    morning 05–09 · rush 09–11 & 16–19 · midday 11–16 · evening 19–22 · night else
+    """
+    local = _to_manila(when)
+    h = int(local.hour)
+    if 5 <= h < 9:
+        return "morning"
+    if 9 <= h < 11 or 16 <= h < 19:
+        return "rush"
+    if 11 <= h < 16:
+        return "midday"
+    if 19 <= h < 22:
+        return "evening"
+    return "night"
+
+
+def time_of_day_label(period: str) -> str:
+    return {
+        "morning": "Morning",
+        "rush": "Rush hour",
+        "midday": "Midday",
+        "evening": "Evening",
+        "night": "Night",
+    }.get(period, period.title())
 
 
 def time_bucket_id(
@@ -229,6 +328,9 @@ class CityConditionsSnapshot:
     disruptions: EdgeDisruptionSet
     feed: str = "simulated"  # honest: not a paid live API
     source: str = "MockTrafficFeed"
+    time_of_day: str = ""
+    time_of_day_label: str = ""
+    local_clock: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -240,6 +342,9 @@ class CityConditionsSnapshot:
             "bucket_id": self.bucket_id,
             "feed": self.feed,
             "source": self.source,
+            "time_of_day": self.time_of_day,
+            "time_of_day_label": self.time_of_day_label,
+            "local_clock": self.local_clock,
             "incident_count": len(self.incidents),
             "incidents": [i.to_dict() for i in self.incidents],
             "disruptions": self.disruptions.to_serializable(),
@@ -353,6 +458,8 @@ def build_snapshot_for_scenario(
 ) -> CityConditionsSnapshot:
     """Materialize a scenario into edges + human incident labels."""
     when = when or _utc_now()
+    local = _to_manila(when)
+    period = time_of_day_period(when)
     bucket = int(bucket_id if bucket_id is not None else time_bucket_id(when))
     sid = str(scenario.get("id") or "unknown")
     base_seed = (bucket * 9973 + sum(ord(c) for c in sid)) % (2**31 - 1)
@@ -395,9 +502,9 @@ def build_snapshot_for_scenario(
             inc = TrafficIncident(
                 id=f"{sid}:0",
                 kind="flood",
-                label=str(spec.get("label") or "Flooded corridor near Pasig"),
+                label=str(spec.get("label") or "Flooded corridor · Pasig riverside"),
                 severity=float(spec.get("severity") or 0.95),
-                area_hint=str(spec.get("area_hint") or "Judge-pinned flood"),
+                area_hint=str(spec.get("area_hint") or "Judge-pinned flood · Pasig side"),
                 edges=dset.normalized_edges(),
                 multiplier=DISRUPTION_FLOOD_MULT,
             )
@@ -414,7 +521,14 @@ def build_snapshot_for_scenario(
         bucket_id=bucket,
         incidents=incidents,
         disruptions=merged,
+        time_of_day=period,
+        time_of_day_label=time_of_day_label(period),
+        local_clock=local.strftime("%H:%M %Z"),
     )
+
+
+def _catalog_by_id() -> Dict[str, Dict[str, Any]]:
+    return {str(s["id"]): dict(s) for s in SCENARIO_CATALOG}
 
 
 def pick_scenario(
@@ -422,27 +536,34 @@ def pick_scenario(
     scenario_id: Optional[str] = None,
     bucket_id: Optional[int] = None,
     rotate: bool = True,
+    when: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Select catalog entry by id or by time-bucket rotation."""
+    """Select catalog entry by id, else by Manila time-of-day + bucket."""
     if scenario_id:
-        for s in SCENARIO_CATALOG:
-            if s["id"] == scenario_id:
-                return dict(s)
+        by_id = _catalog_by_id()
+        if scenario_id in by_id:
+            return by_id[scenario_id]
     if not rotate:
         return dict(SCENARIO_CATALOG[0])
-    bid = int(bucket_id if bucket_id is not None else time_bucket_id())
-    # Exclude judge_flood from automatic rotation so product open ≠ Quantathon pin.
-    rotatable = [s for s in SCENARIO_CATALOG if not s.get("judge_pin")]
-    if not rotatable:
-        rotatable = list(SCENARIO_CATALOG)
-    return dict(rotatable[bid % len(rotatable)])
+
+    when = when or _utc_now()
+    bid = int(bucket_id if bucket_id is not None else time_bucket_id(when))
+    period = time_of_day_period(when)
+    pool_ids = TIME_OF_DAY_POOLS.get(period) or ()
+    by_id = _catalog_by_id()
+    pool = [by_id[i] for i in pool_ids if i in by_id and not by_id[i].get("judge_pin")]
+    if not pool:
+        pool = [dict(s) for s in SCENARIO_CATALOG if not s.get("judge_pin")]
+    if not pool:
+        pool = [dict(s) for s in SCENARIO_CATALOG]
+    return dict(pool[bid % len(pool)])
 
 
 class MockTrafficFeed:
     """
     Product service: current city conditions from a simulated feed.
 
-    ``current(G)`` — snapshot for the active time bucket (or forced scenario).
+    ``current(G)`` — snapshot for the active time-of-day + bucket (or forced).
     ``refresh(G)`` — advance to the next catalog scenario (manual refresh).
     """
 
@@ -467,6 +588,7 @@ class MockTrafficFeed:
                 "name": s["name"],
                 "blurb": s.get("blurb", ""),
                 "judge_pin": bool(s.get("judge_pin")),
+                "periods": list(s.get("periods") or ()),
             }
             for s in SCENARIO_CATALOG
         ]
@@ -482,7 +604,9 @@ class MockTrafficFeed:
         when = when or _utc_now()
         bucket = time_bucket_id(when) + int(self._manual_offset)
         sid = scenario_id or self._forced_scenario_id
-        scenario = pick_scenario(scenario_id=sid, bucket_id=bucket, rotate=sid is None)
+        scenario = pick_scenario(
+            scenario_id=sid, bucket_id=bucket, rotate=sid is None, when=when
+        )
         snap = build_snapshot_for_scenario(
             G,
             scenario,
