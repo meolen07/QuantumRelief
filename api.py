@@ -49,7 +49,7 @@ class RoutingRequest(BaseModel):
     """Request body for Hybrid QML escape routing.
 
     All coordinates are WGS84 ``[latitude, longitude]`` pairs
-    (same convention as Folium / the Streamlit Live Escape UX).
+    (same convention as Folium / the Streamlit Earthquake Escape UX).
 
     Disruptions: omit ``edge_disruptions`` in demo mode to use the active
     mock city feed; pass an explicit serializable disruption dict to override;
