@@ -2,8 +2,8 @@
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
 Manila / Intramuros during an earthquake: set your location, epicenter
-expands with hazard time t, recommend the best evacuate exit, compare
-Hybrid QML vs Classical FiLM vs Dijkstra (travel + safety).
+expands with hazard time t, rank several evacuate areas (recommend the best),
+compare Hybrid QML vs Classical FiLM vs Dijkstra for the selected exit.
 
 Mock feed leads with earthquake / disaster; congestion / flood remain as
 secondary overlays. Quantathon “Run judge demo” stays secondary (collapsed).
@@ -199,6 +199,64 @@ st.markdown(
       margin-bottom: 0.4rem;
     }
     .qr-ro strong { color: #fff; }
+    .qr-exit-list {
+      background: rgba(10,15,30,0.65);
+      border: 1px solid rgba(154,168,188,0.16);
+      border-radius: 12px;
+      padding: 0.45rem 0.55rem;
+      margin-bottom: 0.45rem;
+    }
+    .qr-exit-list .qr-exit-lead {
+      font-size: 0.78rem; color: var(--qr-mist);
+      margin: 0 0 0.45rem 0;
+    }
+    .qr-exit-row {
+      display: flex; align-items: flex-start; gap: 0.45rem;
+      padding: 0.4rem 0.45rem;
+      border-radius: 8px;
+      margin-bottom: 0.28rem;
+      border: 1px solid rgba(154,168,188,0.12);
+      background: rgba(14,22,40,0.55);
+    }
+    .qr-exit-row.recommended {
+      border-color: rgba(245,197,66,0.55);
+      background: rgba(245,197,66,0.10);
+    }
+    .qr-exit-row.selected {
+      border-color: rgba(0,229,255,0.45);
+      box-shadow: inset 0 0 0 1px rgba(0,229,255,0.25);
+    }
+    .qr-exit-rank {
+      flex: 0 0 auto;
+      min-width: 1.35rem; height: 1.35rem;
+      border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 0.68rem; font-weight: 700;
+      color: #041018; background: #9AA8BC;
+    }
+    .qr-exit-row.recommended .qr-exit-rank {
+      background: var(--qr-gold);
+    }
+    .qr-exit-row.selected .qr-exit-rank {
+      background: var(--qr-cyan);
+    }
+    .qr-exit-meta { flex: 1; min-width: 0; }
+    .qr-exit-meta .name {
+      color: #E8EEF6; font-weight: 600; font-size: 0.82rem;
+      line-height: 1.2;
+    }
+    .qr-exit-meta .scores {
+      color: var(--qr-mist); font-size: 0.72rem; margin-top: 0.12rem;
+    }
+    .qr-exit-pill {
+      display: inline-block; margin-left: 0.3rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 999px;
+      color: #041018; background: var(--qr-gold);
+    }
+    .qr-exit-pill.routing {
+      background: var(--qr-cyan);
+    }
     .qr-badge {
       display: inline-block; padding: 0.3rem 0.7rem; border-radius: 999px;
       font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em;
@@ -782,11 +840,14 @@ def _set_destination_from_latlon(
     return _set_destination(G, node, via=via)
 
 
+N_EVACUATE_AREAS = 5  # top-N perimeter candidates shown on map + panel
+
+
 def _ensure_exit_nodes(G) -> List:
-    """Stable perimeter evacuate exits for Escape recommendation."""
+    """Stable perimeter evacuate areas for Escape recommendation (several, not one)."""
     exits = st.session_state.get("exit_nodes")
-    if not exits:
-        exits = select_exit_nodes(G, n_exits=3, seed=42)
+    if not exits or len(exits) < N_EVACUATE_AREAS:
+        exits = select_exit_nodes(G, n_exits=N_EVACUATE_AREAS, seed=42)
         st.session_state["exit_nodes"] = list(exits)
     return list(st.session_state["exit_nodes"])
 
@@ -801,8 +862,57 @@ def _landmark_label_for(G, node, *, index: int = 1) -> str:
     return f"Evacuate area {index}"
 
 
+def _evacuate_area_rows(G) -> List[Dict[str, Any]]:
+    """
+    Display rows for all candidate evacuate areas.
+
+    Prefer scored ranking from recommend_best_exit; fall back to unlabeled exits.
+    """
+    ranking = st.session_state.get("exit_ranking") or []
+    if ranking:
+        rows: List[Dict[str, Any]] = []
+        for row in ranking:
+            node = row.get("exit_node")
+            if node is None or node not in G.nodes:
+                continue
+            rows.append(dict(row))
+        if rows:
+            return rows
+    exits = _ensure_exit_nodes(G)
+    landmarks = {lm["node"]: lm for lm in named_escape_landmarks(G, exits=exits)}
+    rows = []
+    for i, ex in enumerate(exits, start=1):
+        lm = landmarks.get(ex) or {}
+        rows.append(
+            {
+                "exit_node": ex,
+                "label": lm.get("label") or _landmark_label_for(G, ex, index=i),
+                "rank": i,
+                "combined_score": None,
+                "time_score": None,
+                "safety_score": None,
+                "travel_time": None,
+                "safety_km": None,
+                "why": "Rank after location + epicenter are set",
+                "exit_reached": None,
+                "recommended": False,
+                "lat": float(G.nodes[ex]["y"]),
+                "lon": float(G.nodes[ex]["x"]),
+            }
+        )
+    return rows
+
+
+def _select_evacuate_area(G, node, *, via: str = "exit select", auto: bool = False) -> str:
+    """Pin routing destination to a chosen evacuate area (override or recommend)."""
+    st.session_state["exit_auto"] = bool(auto)
+    if auto:
+        st.session_state["recommended_exit"] = node
+    return _set_destination(G, node, via=via)
+
+
 def _recommend_and_set_exit(G, *, via: str = "best exit") -> str:
-    """Rank candidate exits under current epi + soft disruptions; pin best."""
+    """Rank several evacuate areas under current epi + soft disruptions; pin best."""
     exits = _ensure_exit_nodes(G)
     start = st.session_state.get("start_node")
     if start is None or start not in G.nodes:
@@ -823,15 +933,101 @@ def _recommend_and_set_exit(G, *, via: str = "best exit") -> str:
     st.session_state["recommended_exit"] = best
     label = _landmark_label_for(G, best)
     msg = _set_destination(G, best, via=via)
+    n = len(ranking) if ranking else len(exits)
     if ranking:
         top = ranking[0]
         why = top.get("why") or ""
         msg = (
-            f"Best evacuate exit · {label} · score {top.get('combined_score', '—')}. "
-            f"{why}"
+            f"Several evacuate areas ({n}) — recommend {label} · "
+            f"score {top.get('combined_score', '—')}. {why}"
         )
         st.session_state["map_status"] = msg
     return msg
+
+
+def _draw_evacuate_exits_on_map(m, G, *, dest_node, recommended_node) -> None:
+    """Draw all candidate evacuate areas; highlight recommended vs selected vs others."""
+    rows = _evacuate_area_rows(G)
+    if not rows:
+        return
+    # Draw non-selected first so selected/recommended sit on top.
+    ordered = sorted(
+        rows,
+        key=lambda r: (
+            1 if r.get("exit_node") == dest_node else 0,
+            1 if r.get("exit_node") == recommended_node else 0,
+        ),
+    )
+    for row in ordered:
+        node = row.get("exit_node")
+        if node is None or node not in G.nodes:
+            continue
+        lat = float(row.get("lat", G.nodes[node]["y"]))
+        lon = float(row.get("lon", G.nodes[node]["x"]))
+        label = str(row.get("label") or _landmark_label_for(G, node))
+        rank = int(row.get("rank") or 0) or ""
+        score = row.get("combined_score")
+        is_dest = node == dest_node
+        is_rec = node == recommended_node or bool(row.get("recommended"))
+        score_bit = f" · score {score}" if score is not None else ""
+        tip_bits = [f"#{rank} {label}" if rank else label]
+        if is_rec:
+            tip_bits.append("recommended")
+        if is_dest:
+            tip_bits.append("routing here")
+        tip_bits.append(score_bit.strip(" ·") if score_bit else "")
+        tooltip = " · ".join(b for b in tip_bits if b)
+
+        if is_rec and is_dest:
+            ring, fill, weight, radius = "#F5C542", "#F5C542", 4, 11
+            icon_color, icon_name = "orange", "flag"
+        elif is_dest:
+            ring, fill, weight, radius = "#00E5FF", "#0a0f1e", 4, 10
+            icon_color, icon_name = "cadetblue", "flag"
+        elif is_rec:
+            ring, fill, weight, radius = "#F5C542", "#0a0f1e", 3, 9
+            icon_color, icon_name = "orange", "star"
+        else:
+            ring, fill, weight, radius = "#9AA8BC", "#1a2233", 2, 7
+            icon_color, icon_name = "lightgray", "info-sign"
+
+        _no_click(
+            folium.CircleMarker(
+                [lat, lon],
+                radius=radius,
+                color=ring,
+                weight=weight,
+                fill=True,
+                fill_color=fill,
+                fill_opacity=0.9 if (is_rec or is_dest) else 0.65,
+                tooltip=tooltip,
+            )
+        ).add_to(m)
+        _no_click(
+            folium.Marker(
+                [lat, lon],
+                icon=folium.Icon(color=icon_color, icon=icon_name),
+                tooltip=tooltip,
+            )
+        ).add_to(m)
+        if rank:
+            _no_click(
+                folium.Marker(
+                    [lat, lon],
+                    icon=folium.DivIcon(
+                        html=(
+                            f'<div style="font-size:10px;font-weight:700;'
+                            f'color:#041018;background:{ring};'
+                            f'border-radius:50%;width:16px;height:16px;'
+                            f'line-height:16px;text-align:center;'
+                            f'margin-left:-8px;margin-top:10px;">{rank}</div>'
+                        ),
+                        icon_size=(16, 16),
+                        icon_anchor=(0, 0),
+                    ),
+                    tooltip=tooltip,
+                )
+            ).add_to(m)
 
 
 def _activate_random_epicenter(G) -> str:
@@ -852,7 +1048,7 @@ def _activate_random_epicenter(G) -> str:
 
 
 def _load_escape_open(G) -> str:
-    """Product open: Earthquake Escape scenario + best evacuate exit."""
+    """Product open: Earthquake Escape scenario + ranked evacuate areas."""
     near = st.session_state.get("start_node")
     try:
         from src.mock_traffic_feed import get_mock_traffic_feed
@@ -865,7 +1061,7 @@ def _load_escape_open(G) -> str:
         name = getattr(snap, "scenario_name", None) or ESCAPE_OPEN_SCENARIO
         msg = (
             f"Earthquake Escape · {name} · {n} disrupted edges · "
-            "recommend best evacuate exit"
+            "rank several evacuate areas"
         )
         st.session_state["map_status"] = msg
         _recommend_and_set_exit(G, via="escape open")
@@ -1203,7 +1399,7 @@ def _init_session(G, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = (
-            "Set your location on the map · epicenter active · best evacuate exit ready."
+            "Set your location on the map · epicenter active · several evacuate areas ranked."
         )
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
@@ -1222,7 +1418,7 @@ def _apply_map_click(G, lat: float, lon: float) -> str:
             msg = _set_destination_from_latlon(G, lat, lon, via="map any-node")
             st.session_state["exit_auto"] = False
             return msg
-        # Primary Escape: snap to nearest perimeter evacuate exit.
+        # Primary Escape: snap to nearest perimeter evacuate area.
         exits = _ensure_exit_nodes(G)
         if exits:
             best_ex = min(
@@ -1232,8 +1428,9 @@ def _apply_map_click(G, lat: float, lon: float) -> str:
                     + (float(G.nodes[n]["x"]) - float(lon)) ** 2
                 ),
             )
-            st.session_state["exit_auto"] = False
-            return _set_destination(G, best_ex, via="map exit override")
+            return _select_evacuate_area(
+                G, best_ex, via="map exit override", auto=False
+            )
         msg = _set_destination_from_latlon(G, lat, lon, via="map override")
         st.session_state["exit_auto"] = False
         return msg
@@ -1262,13 +1459,13 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Earthquake Escape — safest &amp; fastest exit</div>',
+        '<div class="qr-tagline">Earthquake Escape — several evacuate areas, safest &amp; fastest first</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<div class="qr-tag">Manila apartment shakes → set your location → epicenter &amp; hazard t → '
-        "best evacuate exit → compare Hybrid · Classical · Dijkstra on travel and safety. "
-        "Simulated post-quake feed today — same app with a live provider in production."
+        "several evacuate areas ranked (we recommend the best) → compare Hybrid · Classical · Dijkstra "
+        "on the selected exit. Simulated post-quake feed today — same app with a live provider in production."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1288,7 +1485,7 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, nodes, origin)
 
-    # Product open: Earthquake Escape scenario + best evacuate exit (not judge spam).
+    # Product open: Earthquake Escape scenario + ranked evacuate areas (not judge spam).
     if not st.session_state.get("_feed_autoload_done"):
         st.session_state["_feed_autoload_done"] = True
         _load_escape_open(G)
@@ -1324,8 +1521,8 @@ def main():
         st.markdown(
             f'<div class="qr-panel"><h3>Earthquake Escape</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
-            "B2G2C flagship — feel the quake, reach the safest evacuate exit. "
-            "<b style='color:#E8EEF6'>location → epicenter → best exit → escape route</b>."
+            "B2G2C flagship — feel the quake, choose among several evacuate areas. "
+            "<b style='color:#E8EEF6'>location → epicenter → ranked exits → escape route</b>."
             "</p>"
             '<div class="qr-legend">'
             f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid</span>'
@@ -1333,6 +1530,7 @@ def main():
             f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>Dijkstra</span>'
             f'<span><i style="background:{DISRUPTION_COLOR}"></i>Post-quake damage</span>'
             f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Hazard rings</span>'
+            f'<span><i style="background:#F5C542"></i>Evacuate areas</span>'
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -1446,7 +1644,7 @@ def main():
             key="place_mode",
             help=(
                 "Location = your apartment / start. "
-                "Evacuate exit = optional override among perimeter exits."
+                "Evacuate exit = optional map override among candidate areas."
             ),
         )
         dest_lat = float(
@@ -1469,13 +1667,90 @@ def main():
             f"</span></div>",
             unsafe_allow_html=True,
         )
-        best_bit = " · <b style='color:#F5C542'>Best exit recommended</b>" if exit_auto else " · manual override"
+
+        # --- Several evacuate areas (ranked) — recommend best, show all ---
+        area_rows = _evacuate_area_rows(G)
+        recommended_node = st.session_state.get("recommended_exit")
+        if recommended_node is None and area_rows:
+            for r in area_rows:
+                if r.get("recommended"):
+                    recommended_node = r.get("exit_node")
+                    break
+            if recommended_node is None:
+                recommended_node = area_rows[0].get("exit_node")
+        dest_node = st.session_state.get("dest_node")
+
+        list_html = [
+            '<div class="qr-exit-list">',
+            '<div class="qr-exit-lead">'
+            "<strong style='color:#E8EEF6'>Several evacuate areas</strong> — "
+            "we recommend the safest &amp; fastest"
+            "</div>",
+        ]
+        for row in area_rows:
+            node = row.get("exit_node")
+            is_dest = node == dest_node
+            is_rec = node == recommended_node or bool(row.get("recommended"))
+            classes = "qr-exit-row"
+            if is_rec:
+                classes += " recommended"
+            if is_dest:
+                classes += " selected"
+            rank = row.get("rank") or "—"
+            lab = str(row.get("label") or _landmark_label_for(G, node))
+            pills = ""
+            if is_rec:
+                pills += '<span class="qr-exit-pill">Best</span>'
+            if is_dest:
+                pills += '<span class="qr-exit-pill routing">Routing</span>'
+            score = row.get("combined_score")
+            t_sc = row.get("time_score")
+            s_sc = row.get("safety_score")
+            travel = row.get("travel_time")
+            safety_km = row.get("safety_km")
+            if score is not None:
+                travel_ok = (
+                    travel is not None
+                    and travel == travel
+                    and travel != float("inf")
+                )
+                travel_bit = f"~{travel:.1f} travel" if travel_ok else "unreachable"
+                safety_bit = (
+                    f"{safety_km:.2f} km from epi"
+                    if safety_km is not None
+                    else ""
+                )
+                scores = (
+                    f"Score <b style='color:#E8EEF6'>{score}</b> · "
+                    f"travel {t_sc if t_sc is not None else '—'} · "
+                    f"safety {s_sc if s_sc is not None else '—'} · "
+                    f"{travel_bit}"
+                    + (f" · {safety_bit}" if safety_bit else "")
+                )
+            else:
+                scores = str(row.get("why") or "Awaiting rank")
+            list_html.append(
+                f'<div class="{classes}">'
+                f'<span class="qr-exit-rank">{rank}</span>'
+                f'<div class="qr-exit-meta">'
+                f'<div class="name">{lab}{pills}</div>'
+                f'<div class="scores">{scores}</div>'
+                f"</div></div>"
+            )
+        list_html.append("</div>")
+        st.markdown("".join(list_html), unsafe_allow_html=True)
+
+        best_bit = (
+            " · <b style='color:#F5C542'>Best recommended</b>"
+            if exit_auto
+            else " · <b style='color:#00E5FF'>manual override</b>"
+        )
         st.markdown(
-            f'<div class="qr-ro"><strong>Evacuate exit</strong> · gold flag{best_bit}<br/>'
+            f'<div class="qr-ro"><strong>Routing to</strong> · selected evacuate area{best_bit}<br/>'
             f"<b style='color:#E8EEF6'>{exit_label}</b><br/>"
             f"{dest_lat:.5f}, {dest_lon:.5f}"
             f'<br/><span style="font-size:0.75rem">'
-            f'node {st.session_state["dest_node"]}'
+            f'node {st.session_state["dest_node"]} · gold = recommended · cyan = routing target'
             f"</span></div>",
             unsafe_allow_html=True,
         )
@@ -1511,7 +1786,7 @@ def main():
                 use_container_width=True,
                 type="secondary",
                 key="btn_recommend_exit",
-                help="Rank perimeter evacuate exits for safest + fastest under current hazard",
+                help="Re-rank evacuate areas for safest + fastest under current hazard",
             ):
                 try:
                     msg = _recommend_and_set_exit(G, via="recommend button")
@@ -1520,74 +1795,111 @@ def main():
                     st.session_state["map_status"] = f"Exit recommend failed: {exc}"
                 st.rerun()
 
-        if not st.session_state.get("path"):
-            if "hazard_t_scrub" not in st.session_state:
-                st.session_state["hazard_t_scrub"] = 30
+        # Single hazard scrubber: clamp session_state BEFORE the widget.
+        # Never assign hazard_t_scrub after this slider (Streamlit owns the key).
+        # max_t uses radii_trace when a prior route exists; else 0..60.
+        _path_for_scrub = st.session_state.get("path")
+        _radii_for_scrub = st.session_state.get("radii_trace")
+        if (
+            _radii_for_scrub
+            and _path_for_scrub
+            and len(_path_for_scrub) >= 2
+        ):
+            _scrub_max_t = max(0, len(_radii_for_scrub) - 1)
+        else:
+            _scrub_max_t = 60
+        if "hazard_t_scrub" not in st.session_state:
+            st.session_state["hazard_t_scrub"] = min(30, _scrub_max_t)
+        else:
+            try:
+                _prev_scrub = int(st.session_state["hazard_t_scrub"])
+            except (TypeError, ValueError):
+                _prev_scrub = _scrub_max_t
+            if _prev_scrub > _scrub_max_t:
+                st.session_state["hazard_t_scrub"] = _scrub_max_t
+            elif _prev_scrub < 0:
+                st.session_state["hazard_t_scrub"] = 0
+        if _disaster_active():
             st.slider(
                 "Hazard time t",
                 0,
-                60,
+                _scrub_max_t,
                 key="hazard_t_scrub",
                 help="Primary Escape control — epicenter damage radius grows with t",
             )
 
-        ranking = st.session_state.get("exit_ranking") or []
-        exits = _ensure_exit_nodes(G)
-        if ranking or exits:
-            with st.expander("Override evacuate exit", expanded=False):
-                st.caption(
-                    "Know a few exits but not which is best? Pick among ranked "
-                    "evacuate areas — or keep Best exit recommended."
+        # Override among ranked evacuate areas (always visible).
+        if area_rows:
+            options = []
+            node_by_label = {}
+            for row in area_rows:
+                node = row.get("exit_node")
+                if node is None or node not in G.nodes:
+                    continue
+                lab = str(row.get("label") or _landmark_label_for(G, node))
+                rank = row.get("rank", "—")
+                score = row.get("combined_score")
+                tag = (
+                    " ★ best"
+                    if (node == recommended_node or row.get("recommended"))
+                    else ""
                 )
-                options: List[str] = []
-                node_by_label: Dict[str, Any] = {}
-                if ranking:
-                    for i, row in enumerate(ranking):
-                        node = row.get("exit_node")
-                        if node is None or node not in G.nodes:
-                            continue
-                        lab = str(row.get("label") or _landmark_label_for(G, node, index=i + 1))
-                        score = row.get("combined_score", "—")
-                        why = row.get("why") or ""
-                        label = f"{lab} · score {score}"
-                        if why:
-                            label = f"{label} · {why}"
-                        options.append(label)
-                        node_by_label[label] = node
+                if score is not None:
+                    label = f"#{rank} {lab} · score {score}{tag}"
                 else:
-                    for i, ex in enumerate(exits):
-                        lab = _landmark_label_for(G, ex, index=i + 1)
-                        options.append(lab)
-                        node_by_label[lab] = ex
-                if options:
-                    current = st.session_state.get("dest_node")
-                    default_ix = 0
-                    for i, lab in enumerate(options):
-                        if node_by_label.get(lab) == current:
-                            default_ix = i
-                            break
-                    choice = st.selectbox(
-                        "Evacuate exits",
-                        options=options,
-                        index=default_ix,
-                        key="exit_override_select",
-                    )
+                    label = f"#{rank} {lab}{tag}"
+                options.append(label)
+                node_by_label[label] = node
+            if options:
+                current = st.session_state.get("dest_node")
+                default_ix = 0
+                for i, lab in enumerate(options):
+                    if node_by_label.get(lab) == current:
+                        default_ix = i
+                        break
+                choice = st.selectbox(
+                    "Override evacuate area",
+                    options=options,
+                    index=default_ix,
+                    key="exit_override_select",
+                    help="Pick any ranked area — engines compare for the selected exit only",
+                )
+                ov_a, ov_b = st.columns(2)
+                with ov_a:
                     if st.button(
-                        "Use selected exit",
+                        "Route to selected",
                         use_container_width=True,
                         type="secondary",
                         key="btn_use_exit",
                     ):
                         node = node_by_label.get(choice)
                         if node is not None:
-                            st.session_state["exit_auto"] = False
-                            _set_destination(G, node, via="exit override")
+                            is_best = node == recommended_node
+                            _select_evacuate_area(
+                                G, node, via="exit override", auto=is_best
+                            )
+                            st.rerun()
+                with ov_b:
+                    if st.button(
+                        "Use recommended",
+                        use_container_width=True,
+                        type="secondary",
+                        key="btn_use_recommended",
+                        disabled=recommended_node is None,
+                    ):
+                        if recommended_node is not None:
+                            _select_evacuate_area(
+                                G,
+                                recommended_node,
+                                via="use recommended",
+                                auto=True,
+                            )
                             st.rerun()
 
         with st.expander("Arbitrary destination (secondary)", expanded=False):
             st.caption(
                 "Not the primary Escape story — any graph node as destination "
-                "(A→B). Prefer evacuate exits above."
+                "(A→B). Prefer ranked evacuate areas above."
             )
             if st.button(
                 "Enable any-node destination clicks",
@@ -1597,6 +1909,7 @@ def main():
             ):
                 st.session_state["place_mode"] = PLACE_DEST
                 st.session_state["any_node_dest"] = True
+                st.session_state["exit_auto"] = False
                 st.session_state["map_status"] = (
                     "Map clicks set any-node destination (secondary mode)."
                 )
@@ -2007,21 +2320,19 @@ def main():
                         "HERO is reserved for true Hybrid wins only."
                     )
 
+            # Read-only: slider lives above (epicenter controls). Do not write
+            # hazard_t_scrub here — widget already owns that key this run.
             radii_for_scrub = st.session_state.get("radii_trace")
             if _disaster_active():
                 if radii_for_scrub and path and len(path) >= 2:
                     max_t = max(0, len(radii_for_scrub) - 1)
                 else:
                     max_t = 60
-                prev_t = int(st.session_state.get("hazard_t_scrub", max_t))
-                if prev_t > max_t or "hazard_t_scrub" not in st.session_state:
-                    st.session_state["hazard_t_scrub"] = max_t
-                t_scrub = st.slider(
-                    "Hazard time t",
-                    0,
-                    max_t,
-                    key="hazard_t_scrub",
-                )
+                try:
+                    t_scrub = int(st.session_state.get("hazard_t_scrub", max_t))
+                except (TypeError, ValueError):
+                    t_scrub = max_t
+                t_scrub = max(0, min(t_scrub, max_t))
                 if radii_for_scrub and path and len(path) >= 2:
                     st.session_state["_step_reveal"] = min(
                         int(t_scrub) + 1, len(path) - 1
@@ -2034,7 +2345,8 @@ def main():
                     r_now = float(radii_for_scrub[int(t_scrub)]["r_epi"])
                 st.caption(
                     f"Disaster feed · epicenter radius grows with t · "
-                    f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km**"
+                    f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km** "
+                    f"· scrub t={t_scrub}/{max_t} above"
                 )
             else:
                 st.session_state.pop("_step_reveal", None)
@@ -2187,8 +2499,8 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
             st.info(
                 "① Set **Your location** (map click = apartment/start) · "
                 "② Epicenter + **Hazard time t** · "
-                "③ **Best evacuate exit** (or override) · "
-                "④ **Find safest & fastest escape route**."
+                "③ **Several evacuate areas** ranked — we recommend the best (or override) · "
+                "④ **Find safest & fastest escape route** for the selected exit."
             )
 
         st.markdown(
@@ -2214,8 +2526,11 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
         disaster_on = _disaster_active()
         place_mode = st.session_state.get("place_mode", PLACE_START)
+        n_exits = len(st.session_state.get("exit_nodes") or [])
         st.caption(
-            f"Map click → **{place_mode}** · blue = your location · gold flag = evacuate exit"
+            f"Map click → **{place_mode}** · blue = your location · "
+            f"gold = recommended evacuate area · cyan = routing target · "
+            f"{n_exits or N_EVACUATE_AREAS} candidate exits on map"
             + (" · red rings = earthquake hazard" if disaster_on else "")
             + (" · faded cyan = deferred Hybrid" if hybrid_deferred else "")
         )
@@ -2288,21 +2603,11 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
             ).add_to(m)
 
-        dest_lat = G.nodes[dest_draw]["y"]
-        dest_lon = G.nodes[dest_draw]["x"]
-
         _no_click(
             folium.Marker(
                 [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
                 icon=folium.Icon(color="blue", icon="home"),
                 tooltip="Your location",
-            )
-        ).add_to(m)
-        _no_click(
-            folium.Marker(
-                [dest_lat, dest_lon],
-                icon=folium.Icon(color="orange", icon="flag"),
-                tooltip="Evacuate exit",
             )
         ).add_to(m)
         _no_click(
@@ -2316,17 +2621,17 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 fill_opacity=0.9,
             )
         ).add_to(m)
-        _no_click(
-            folium.CircleMarker(
-                [dest_lat, dest_lon],
-                radius=9,
-                color="#F5C542",
-                weight=3,
-                fill=True,
-                fill_color="#F5C542",
-                fill_opacity=0.85,
-            )
-        ).add_to(m)
+
+        # All candidate evacuate areas (recommended highlighted; selected = routing).
+        recommended_draw = st.session_state.get("recommended_exit")
+        if recommended_draw is None and bool(st.session_state.get("exit_auto", True)):
+            recommended_draw = dest_draw
+        _draw_evacuate_exits_on_map(
+            m,
+            G,
+            dest_node=dest_draw,
+            recommended_node=recommended_draw,
+        )
 
         if dij_path and len(dij_path) >= 2:
             coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
