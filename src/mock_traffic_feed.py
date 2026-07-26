@@ -374,7 +374,7 @@ def time_bucket_id(
 
 def _load_judge_flood_params() -> Dict[str, int]:
     """Pinned flood seed from demo_scenarios.json when present."""
-    defaults = {"seed": 17025, "corridor_extra": 11, "near_start": True}
+    defaults = {"seed": 17012, "corridor_extra": 11, "near_start": True}
     path = Path(DEMO_SCENARIOS_PATH)
     if not path.exists():
         return defaults
@@ -398,9 +398,24 @@ def _load_judge_flood_params() -> Dict[str, int]:
         "qa_4": {"seed": 17025, "corridor_extra": 8},
         "qa_5": {"seed": 17025, "corridor_extra": 6},
     }
-    if sid in by_id:
+    # Prefer per-scenario flood fields from the curated scenario row.
+    scenarios = {
+        str(s.get("id")): s for s in (payload.get("scenarios") or []) if s.get("id")
+    }
+    sc = scenarios.get(sid) or {}
+    sc_seed = sc.get("flood_seed")
+    if sc_seed is None:
+        sc_seed = (sc.get("metrics") or {}).get("flood_seed")
+    sc_extra = sc.get("corridor_extra")
+    if sc_extra is None:
+        sc_extra = (sc.get("metrics") or {}).get("corridor_extra")
+    if sc_seed is not None:
+        defaults["seed"] = int(sc_seed)
+        if sc_extra is not None:
+            defaults["corridor_extra"] = int(sc_extra)
+    elif sid in by_id:
         defaults.update(by_id[sid])
-    defaults["scenario_id"] = sid or "qa_2"
+    defaults["scenario_id"] = sid or "qa_1"
     return defaults
 
 
