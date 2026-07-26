@@ -364,7 +364,7 @@ def reset_weights_to_nominal(G: nx.Graph, gaussian_noise: bool = True) -> None:
 
 
 def select_exit_nodes(
-    G: nx.Graph, n_exits: int = 3, seed: Optional[int] = 42
+    G: nx.Graph, n_exits: int = 5, seed: Optional[int] = 42
 ) -> List:
     """
     Define exit nodes at strategic perimeter locations (paper Sec. II B).
@@ -476,7 +476,7 @@ def named_escape_landmarks(
 ) -> List[Dict[str, Any]]:
     """Short list of named exits/landmarks for Earthquake Escape destination UI."""
     if exits is None:
-        exits = select_exit_nodes(G, n_exits=3, seed=42)
+        exits = select_exit_nodes(G, n_exits=5, seed=42)
     out: List[Dict[str, Any]] = []
     used_labels: set = set()
     for i, ex in enumerate(exits, start=1):
