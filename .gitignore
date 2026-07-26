@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+paper_extract.txt
+.streamlit/
+*.egg-info/
+.pytest_cache/
+cache/
+*.log
+models/*_partial.pt
+.Python
+dist/
+build/
