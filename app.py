@@ -106,6 +106,8 @@ DISTANT_EPI_LAT = 14.5792
 DISTANT_EPI_LON = 120.9850
 
 # Reliability: Hybrid deferred when catastrophic vs Classical or very slow.
+# Disabled for Escape demo — always serve Hybrid path/metrics as primary.
+ENABLE_HYBRID_DEFER = False
 HYBRID_CATASTROPHIC_RATIO = 1.25
 HYBRID_SLOW_MS = 45_000.0
 HYBRID_SLOW_VS_CLASSICAL = 8.0
@@ -1427,8 +1429,11 @@ def _should_defer_hybrid(
     """
     Reliability rule: defer Hybrid when catastrophic vs Classical, failed, or very slow.
 
-    Returns (defer, reason_code).
+    Returns (defer, reason_code). Escape demo keeps Hybrid primary
+    (ENABLE_HYBRID_DEFER=False) so this never swaps the served route.
     """
+    if not ENABLE_HYBRID_DEFER:
+        return False, ""
     if classical_path is None or classical_travel is None:
         return False, ""
     ct = float(classical_travel)
@@ -2663,12 +2668,15 @@ def main():
                         )
 
                     latency_ms = cmp.get("latency_ms") or {}
-                    hybrid_deferred = bool(hybrid_fell_back)
-                    deferred_reason = "failed" if hybrid_fell_back else ""
+                    # Escape demo: never defer Hybrid→Classical for catastrophic /
+                    # slow / failed-reach. Keep Hybrid path + metrics as primary;
+                    # Classical stays available under Advanced.
+                    hybrid_deferred = False
+                    deferred_reason = ""
                     deferred_note = ""
                     primary_engine = "hybrid"
 
-                    if use_hybrid and not hybrid_fell_back:
+                    if ENABLE_HYBRID_DEFER and use_hybrid and not hybrid_fell_back:
                         defer, reason = _should_defer_hybrid(
                             hybrid_travel=float(qml_travel),
                             classical_travel=(
@@ -2702,21 +2710,13 @@ def main():
                             elif reason == "timeout":
                                 deferred_note += " · Hybrid too slow this run"
 
+                    # Only when Hybrid failed to load (no Hybrid path available).
                     if hybrid_fell_back and classical_path and len(classical_path) >= 2:
                         primary_engine = "classical"
                         path = classical_path
                         reached = bool(classical_reached)
-                        label = "Classical FiLM (Hybrid deferred)"
-                        if not deferred_note:
-                            if deferred_reason == "failed":
-                                deferred_note = (
-                                    "Hybrid deferred · showing Classical · Hybrid failed"
-                                )
-                            else:
-                                deferred_note = (
-                                    "Hybrid deferred · showing Classical · runtime"
-                                )
-                                deferred_reason = deferred_reason or "runtime"
+                        label = "Classical FiLM (ablation)"
+                        # No "Hybrid deferred" captions — runtime load failure only.
 
                     st.session_state.update(
                         {
