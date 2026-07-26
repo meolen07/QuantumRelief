@@ -9,7 +9,7 @@ Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 [PennyLane](https://pennylane.ai)
 [License](LICENSE)
 
-Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
+Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)** · Judge defense: [`docs/TECHNICAL_QA.md`](docs/TECHNICAL_QA.md)
 
 **Tagline:** Earthquake Escape — safest & fastest evacuate exit under expanding hazard.
 
@@ -17,9 +17,9 @@ Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)*
 
 ## Overview
 
-You are in a Manila apartment when the ground shakes. You may know a few evacuate areas — not which is safest and fastest. **Earthquake Escape** recommends the best exit and routes you there while hazard rings expand with time `t`.
+You are in a Manila apartment when the ground shakes. You may know a few evacuate areas — not which is safest and fastest. **Earthquake Escape** ranks several exits, recommends the best, and routes you there while hazard rings expand with time `t`.
 
-**Earthquake Escape** (Manila Intramuros) is the **Quantathon B2G2C flagship**. Epicenter / hazard rings + `t` scrub are primary. Post-quake damaged / blocked roads (and Ondoy-like flood as a related dynamic-hazard case) are secondary overlays — not a daily-commute product pitch. **B2B API + simulation now**; Escape builds civic trust for longer B2G2C.
+**Earthquake Escape** (Manila Intramuros) is the **Quantathon B2G2C flagship**. Epicenter / hazard rings + `t` scrub are primary. Post-quake damaged / blocked roads (and Ondoy-like flood as a related dynamic-hazard case) are secondary overlays — not a daily-commute product pitch.
 
 A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline under Algorithm 1 dynamic weights.
 
@@ -34,10 +34,7 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 
 | Surface                 | Audience                            | Role                                                                                                                      |
 | ----------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **Earthquake Escape**   | Citizens + city ops (B2G2C)         | Location → epicenter / hazard `t` → best evacuate exit → Hybrid · Classical · Dijkstra (travel + safety) · judge secondary |
-
-
-`src/god_view.py` remains in-repo for optional command-center experiments but is **not** wired into the Streamlit UI.
+| **Earthquake Escape**   | Citizens + city ops (B2G2C)         | Location → epicenter / hazard `t` → several ranked evacuate areas (recommend best) → Hybrid · Classical · Dijkstra on selected exit (travel + safety) · judge secondary |
 
 **UI palette:** deep navy · **cyan** Hybrid · **gold** Classical · orange accents · **red** hazard · white/light dashed Dijkstra.
 
@@ -52,7 +49,7 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 | **Flagship**      | Earthquake + evacuate-exit surge = Quantathon Earthquake Escape story.                                                |
 | **Related case**  | Same dynamic-weight engine for post-quake damage / Ondoy-like flood corridors.                                        |
 | **Solution**      | Dynamic edge weights + **Hybrid FiLM∥PHN** local next-hop vs Classical ablation vs Dijkstra oracle (+ safety).         |
-| **Business**      | Sell **B2B routing API / sim** now; grow **B2G2C Earthquake Escape** trust over time.                                  |
+| **Business**      | Ship **Earthquake Escape** proof now; grow civic / agency trust; optional routing API is later roadmap.                |
 
 
 ---
@@ -121,13 +118,12 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
 - **3-way metrics** — travel time, safety, destination reached, path overlap, quantum contribution, latency (ms)
 - **Mock Escape feed** — quake-forward named conditions (`as_of`, Manila time-of-day, earthquake + post-quake damage / flood) via `MockTrafficFeed`
-- **Your location + Best evacuate exit** — map click = apartment/start; recommended perimeter exit (+ optional override among exits)
+- **Your location + several evacuate areas** — map click = apartment/start; top-N perimeter exits drawn + ranked (travel + safety); best recommended; user can override routing target
 - **Epicenter + hazard `t`** — primary Escape controls (red rings); not an optional stress toy
 - **Reliability fallback** — if Hybrid travel > 1.25× Classical (or Hybrid fails / very slow), serve Classical as primary with “Hybrid deferred · showing Classical” (no HERO)
-- **Traffic badge** — **Live conditions · simulated feed** (honest) vs live API stub
+- **Traffic badge** — **Live conditions · simulated feed** (honest) vs live feed stub
 - **Run judge demo** — secondary Quantathon path (collapsed): curated corridor + pinned flood + auto escape route
 - **Earthquake Escape UI** — Folium 2D · left ~2/3 map · right ~1/3 scrollable panel · English
-- **B2B API** — FastAPI `/api/v1/calculate_route` applies mock feed in demo; optional Classical / Dijkstra
 - **Offline-ready** — cached GraphML, dataset, and trained checkpoints shipped in-repo
 - **Cloud sync** — see [`CLOUD_UPLOAD.md`](CLOUD_UPLOAD.md)
 
@@ -138,7 +134,6 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 ```mermaid
 flowchart LR
   UX[Streamlit Earthquake Escape] --> RS[routing_service]
-  API[FastAPI B2B API] --> RS
   TP[TrafficProvider] --> RS
   Feed[MockTrafficFeed quake catalog] --> Mock
   Mock[MockTrafficProvider demo] -.-> TP
@@ -151,7 +146,7 @@ flowchart LR
   RS --> Dyn[Algorithm 1 dynamic weights]
 ```
 
-**One-liner:** Demo = production Earthquake Escape + mock feed · Production = same app + live provider. Hazard + post-quake damage flow Escape → `TrafficProvider` → `routing_service` → Algorithm 1.
+**One-liner:** Demo = production Earthquake Escape + mock feed · Production = same Escape app + live provider. Hazard + post-quake damage flow Escape → `TrafficProvider` → `routing_service` → Algorithm 1.
 
 
 
@@ -163,7 +158,7 @@ flowchart LR
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
-# Badge shows: Live conditions · simulated feed (default — no API keys)
+# Badge shows: Live conditions · simulated feed (default — no traffic keys)
 ```
 
 Switch traffic feed mode:
@@ -179,26 +174,15 @@ QR_TRAFFIC_MODE=live streamlit run app.py
 QR_TRAFFIC_MODE=live TRAFFIC_API_KEY=your_key streamlit run app.py
 ```
 
-Optional API:
+### Optional — developer routing API
+
+Kept for later B2B experiments (not part of the Escape demo story):
 
 ```bash
 pip install -r requirements-api.txt
 uvicorn api:app --host 0.0.0.0 --port 8000
+# OpenAPI: http://127.0.0.1:8000/docs
 ```
-
-```bash
-curl -s http://127.0.0.1:8000/api/v1/calculate_route \
-  -H "Content-Type: application/json" \
-  -d '{
-    "start_coords": [14.5895, 120.9750],
-    "epicenter_coords": [14.5850, 120.9780],
-    "exit_coords": [14.5920, 120.9720],
-    "include_comparison": true,
-    "use_mock_feed": true
-  }'
-```
-
-OpenAPI docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 Graph, dataset, and checkpoints under `data/` and `models/` are included. OSM download runs only if the GraphML cache is missing.
 
@@ -210,13 +194,13 @@ Demo ≠ fake UI. **Demo = production Earthquake Escape + `MockTrafficProvider` 
 
 ### Step-by-step (Earthquake Escape)
 
-1. Open the app — product opens on **Earthquake Escape** (`quake_core`) with epicenter active and **Best evacuate exit** recommended. Badge: **Live conditions · simulated feed**.
-2. **Your escape** — click the map to set **Your location** (apartment/start). Epicenter + **Hazard time t** are primary. Override evacuate exit among ranked exits if you already know candidates.
-3. **Escape route** — press **Find safest & fastest escape route**. Hazard + post-quake damage apply to Hybrid, Classical, and Dijkstra the same way.
+1. Open the app — product opens on **Earthquake Escape** (`quake_core`) with epicenter active and **several evacuate areas** ranked (best recommended). Badge: **Live conditions · simulated feed**.
+2. **Your escape** — click the map to set **Your location** (apartment/start). Epicenter + **Hazard time t** are primary. Panel lists ranked exits with scores; override which area to route to if you already know candidates.
+3. **Escape route** — press **Find safest & fastest escape route**. Engines compare for the **selected** exit. Hazard + post-quake damage apply to Hybrid, Classical, and Dijkstra the same way.
 4. Read travel + safety in the panel. **HERO** appears only when Hybrid strictly wins (or travel-tie + higher safety). If Hybrid is catastrophic (>1.25× Classical), fails, or is very slow → **Hybrid deferred · showing Classical** (no HERO; Hybrid path faded).
 5. Secondary: **Refresh feed** · post-quake damage overlays · collapsed arbitrary destination · collapsed **Run judge demo** (Quantathon / Ondoy-like flood).
 
-Layout: left **~2/3** Folium map · right **~1/3** panel. No God View, no address field. Primary destination story = evacuate exits.
+Layout: left **~2/3** Folium map · right **~1/3** panel. No address field. Primary destination story = several evacuate areas (recommend safest & fastest; others stay visible).
 
 ### Mock feed scenarios
 
@@ -240,7 +224,7 @@ Scenarios rotate by **Manila time-of-day** plus a 5-minute deterministic bucket.
 | **Demo (default)** | `MockTrafficProvider` + `MockTrafficFeed` | `QR_TRAFFIC_MODE=demo` |
 | **Production** | `LiveTrafficProvider` (TomTom/HERE stub) | `QR_TRAFFIC_MODE=live` + `TRAFFIC_API_KEY` |
 
-Same Streamlit app, same `/api/v1/calculate_route` contract — only the feed provider changes.
+Same Streamlit Escape app — only the feed provider changes.
 
 ---
 
@@ -255,9 +239,9 @@ Collapsed **Run judge demo**: curated advantage corridor + pinned flood + mild e
 QuantumRelief/
   runtime.txt              # Streamlit Cloud: python-3.11
   requirements.txt         # Cloud / Streamlit (numpy → torch → pennylane)
-  requirements-api.txt     # FastAPI + uvicorn
+  requirements-api.txt     # Optional FastAPI deps (developer; not demo path)
   app.py                   # Earthquake Escape product surface (Folium 2D)
-  api.py                   # B2B Quantum Routing API
+  api.py                   # Optional routing API (kept for later; out of demo path)
   data/                    # GraphML + routing_dataset.npz + retrain_report.json
                            # + demo_scenarios.json + hard_seeds.json
   models/                  # film_classical.pt, film_hybrid.pt
@@ -268,10 +252,9 @@ QuantumRelief/
     film_model.py          # Classical FiLM
     safety_loss.py         # Safety aux loss (λ_safe · L_safe)
     quantum_hybrid.py      # PennyLane Hybrid PHN (+ quantum contribution %)
-    routing_service.py     # Shared Hybrid + Classical + Dijkstra (API + app)
+    routing_service.py     # Shared Hybrid + Classical + Dijkstra (Escape app)
     traffic_provider.py    # Mock vs Live provider (swap for production)
     mock_traffic_feed.py   # Named city conditions + Manila time-of-day pools
-    god_view.py            # Unused by app (optional command-center experiments)
   CLOUD_UPLOAD.md          # Exact files + Streamlit Cloud verify checklist
   scripts/
     retrain_models.py
@@ -329,9 +312,9 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 
 | Horizon   | Focus                                                                                                                                      |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Now**   | Earthquake Escape + Hybrid / Classical / Dijkstra · B2B `/api/v1/calculate_route` · `MockTrafficProvider` (quake-forward demo default)     |
-| **Next**  | Wire `LiveTrafficProvider` to TomTom / HERE · multi-district graphs · civic Escape pilots                                                  |
-| **Later** | Real QPU offload · offline edge · SEA city transfer · fuller B2G2C Earthquake Escape product                                               |
+| **Now**   | Earthquake Escape + Hybrid / Classical / Dijkstra · `MockTrafficProvider` (quake-forward demo default) |
+| **Next**  | Wire `LiveTrafficProvider` to TomTom / HERE · multi-district graphs · civic Escape pilots             |
+| **Later** | Optional B2B routing API · real QPU offload · offline edge · SEA city transfer · fuller B2G2C Escape  |
 
 
 ---
@@ -342,7 +325,7 @@ python -c "from src.graph_setup import load_or_build_graph; print(load_or_build_
 2. [share.streamlit.io](https://share.streamlit.io) → select repo → **reboot the app** after model / dataset uploads so `@st.cache_resource` reloads checkpoints
 3. Confirm logs: Python **3.11** (`runtime.txt`), `numpy` before `torch`, PennyLane import OK
 
-Cloud pins live in `**requirements.txt`**. API deps stay in `**requirements-api.txt**` so Cloud stays lean.
+Cloud pins live in `**requirements.txt`**. Optional API deps stay in `**requirements-api.txt**` (not needed for Cloud Escape demo).
 
 Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane install times out, Classical FiLM still runs; Hybrid shows unavailable.
 

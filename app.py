@@ -1263,7 +1263,7 @@ def _clear_disruption() -> None:
 
 
 def _traffic_feed_badge_html() -> str:
-    """Honest product badge: Live conditions · simulated feed (or live API)."""
+    """Honest product badge: Live conditions · simulated feed (or live feed)."""
     info = get_traffic_provider().mode_info()
     cls = "qr-badge feed live" if info.mode == "live" else "qr-badge feed"
     return f'<span class="{cls}">{info.badge}</span>'
@@ -1459,7 +1459,7 @@ def _init_session(G, nodes, origin):
         st.session_state["edge_disruptions"] = None
     if "feed_snapshot" not in st.session_state:
         st.session_state["feed_snapshot"] = None
-    _ = nodes  # kept for API symmetry / future filters
+    _ = nodes  # kept for signature symmetry / future filters
 
 
 def _apply_map_click(G, lat: float, lon: float) -> str:
