@@ -1,6 +1,6 @@
 # QuantumRelief
 
-**Quantum Intelligence. Human Relief.**
+**Quantum-inspired hybrid ML for earthquake escape.**
 
 Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 
@@ -9,9 +9,9 @@ Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 [PennyLane](https://pennylane.ai)
 [License](LICENSE)
 
-Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
+Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)** · Judge defense: [`docs/TECHNICAL_QA.md`](docs/TECHNICAL_QA.md)
 
-**Tagline:** Earthquake Escape — safest & fastest evacuate exit under expanding hazard.
+**Tagline:** Quantum-inspired Hybrid FiLM∥PHN — safest & fastest evacuate exit under expanding hazard (simulated VQC today; hardware-ready later).
 
 ---
 
@@ -21,11 +21,11 @@ You are in a Manila apartment when the ground shakes. You may know a few evacuat
 
 **Earthquake Escape** (Manila Intramuros) is the **Quantathon B2G2C flagship**. Epicenter / hazard rings + `t` scrub are primary. Post-quake damaged / blocked roads (and Ondoy-like flood as a related dynamic-hazard case) are secondary overlays — not a daily-commute product pitch.
 
-A **Hybrid Quantum–Classical FiLM** model (PennyLane PHN) is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline under Algorithm 1 dynamic weights.
+A **quantum-inspired Hybrid QML** model — classical FiLM ∥ variational quantum circuit **simulated** on PennyLane `default.qubit` (PHN) — is the hero path; Classical FiLM is an ablation; Dijkstra is the full-information optimal baseline under Algorithm 1 dynamic weights. We do **not** claim real-time QPU execution or quantum supremacy.
 
 Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](https://arxiv.org/abs/2307.15682)* (Furubira → Manila).
 
-**Honest scope today:** Manila OSM + **Live conditions · simulated feed** (`MockTrafficProvider` + `MockTrafficFeed` — quake-forward catalog: earthquake hazard + post-quake damage / flood). Same Earthquake Escape app in production with `LiveTrafficProvider` (TomTom / HERE stub; set `QR_TRAFFIC_MODE=live` + `TRAFFIC_API_KEY`).
+**Honest scope today:** Manila OSM + **Live conditions · simulated feed** (`MockTrafficProvider` + `MockTrafficFeed` — quake-forward catalog: earthquake hazard + post-quake damage / flood). Same Earthquake Escape app in production with `LiveTrafficProvider` (TomTom / HERE stub; set `QR_TRAFFIC_MODE=live` + `TRAFFIC_API_KEY`). Value today = measurable **Hybrid vs Classical** ablation under earthquake dynamics — not hardware quantum speedup.
 
 **Architecture:** `Demo = production app + MockTrafficFeed` · `Production = same app + LiveTrafficProvider`
 
@@ -48,7 +48,7 @@ Adapted from Haboury et al., *[Quantum Machine Learning for Disaster Response](h
 | **Problem**       | Static Dijkstra / A* fails when hazard expands and exits compete — citizens need safest & fastest escape, not A→B GPS. |
 | **Flagship**      | Earthquake + evacuate-exit surge = Quantathon Earthquake Escape story.                                                |
 | **Related case**  | Same dynamic-weight engine for post-quake damage / Ondoy-like flood corridors.                                        |
-| **Solution**      | Dynamic edge weights + **Hybrid FiLM∥PHN** local next-hop vs Classical ablation vs Dijkstra oracle (+ safety).         |
+| **Solution**      | Dynamic edge weights + **quantum-inspired Hybrid FiLM∥PHN** (sim) local next-hop vs Classical ablation vs Dijkstra oracle (+ safety). |
 | **Business**      | Ship **Earthquake Escape** proof now; grow civic / agency trust; optional routing API is later roadmap.                |
 
 
@@ -70,6 +70,16 @@ From `data/retrain_report.json` — balance hard fine-tune (`λ_safe=0.32`, hard
 
 
 Hybrid **mean travel ≤ Classical** (Δ ≈ −1.06) with **~75%** travel wins and **~81%** near Dijkstra. Mean **min-epi** safety also edges Classical (Δ ≈ +0.045). Catastrophic blowups (H travel > 1.25× C) ≈ **9.4%** (down from ~10.7%). **Promote: YES** — `film_hybrid_hardft.pt` → serving `models/film_hybrid.pt`. UI **HERO** badge only when Hybrid strictly beats Classical on travel, or travel-tie + higher safety.
+
+### Pitch / Notion charts
+
+See [`docs/RESULTS_CHARTS.md`](docs/RESULTS_CHARTS.md). Static PNGs (cyan Hybrid · gold Classical · grey Dijkstra) under `docs/assets/` — regenerate with:
+
+```bash
+.venv/bin/python scripts/generate_results_charts.py
+```
+
+Interactive comparison: Cursor canvas `quantumrelief-results.canvas.tsx` (open beside chat).
 
 **Safety score** (path rollout, **min-epi based**, higher = safer; UI-scale ~0.05–2.0):
 
@@ -99,7 +109,7 @@ Implemented in `src/quantum_hybrid.py` → `estimate_quantum_contribution_pct`.
 
 ### Latency note
 
-On **Find safest & fastest route**, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`). Roadmap: a **real QPU** accelerates complex operators; Classical FiLM remains the production fallback.
+On **Find safest & fastest route**, the UI times Hybrid / Classical / Dijkstra rollouts (ms). **Hybrid is slower on classical simulators** (`PennyLane default.qubit`) — this is expected for quantum-*inspired* Hybrid QML today. Roadmap: hardware-ready PHN offload later; Classical FiLM remains the production fallback. We do **not** claim real-time QPU latency or supremacy.
 
 ### Quantum Advantage stress scenarios
 
@@ -113,7 +123,7 @@ python -u scripts/find_advantage_scenarios.py 60 5 42
 
 ## Key features
 
-- **Hybrid QML hero** — PennyLane PHN FiLM; **cyan** path on the map
+- **Quantum-inspired Hybrid QML hero** — classical FiLM ∥ PennyLane PHN (`default.qubit` sim); **cyan** path on the map
 - **Classical FiLM ablation** — **gold** overlay (same FiLM, no quantum branch)
 - **Dijkstra baseline** — **white dashed** overlay with full Algorithm 1 dynamic weights
 - **3-way metrics** — travel time, safety, destination reached, path overlap, quantum contribution, latency (ms)
@@ -269,7 +279,7 @@ QuantumRelief/
 
 | Asset                                  | Role                                        |
 | -------------------------------------- | ------------------------------------------- |
-| `models/film_hybrid.pt`                | Hybrid QML FiLM (PennyLane PHN) — demo hero |
+| `models/film_hybrid.pt`                | Quantum-inspired Hybrid FiLM∥PHN (PennyLane sim) — demo hero |
 | `models/film_classical.pt`             | Classical FiLM ablation                     |
 | `data/manila_intramuros_graph.graphml` | Cached Intramuros road graph                |
 | `data/routing_dataset.npz`             | Training / eval samples (~18.9k hard)       |
