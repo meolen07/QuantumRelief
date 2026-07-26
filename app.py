@@ -2,12 +2,13 @@
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
 Audience flow (only):
-  1) Map opens with fixed epicenter, 5 evacuate exits, amber broken roads near epi
-  2) Click map → set your location (start)
+  1) Map opens with fault line → epicenter → amber broken roads near epi + 5 exits
+  2) Click map → set your location (clear blue start dot)
   3) App auto-recommends the best-ranked evacuate exit
-  4) Find escape route → Hybrid vs Classical vs Dijkstra metrics
+  4) Find escape route → Hybrid path with per-hop probabilities + node-by-node animation
 
-No Run demo, no first-load auto-compare. Folium 2D only.
+No Run demo, no first-load auto-compare. Folium 2D only. Classical / Dijkstra
+live in Advanced (collapsed) — primary demo is Hybrid-focused.
 """
 
 from __future__ import annotations
@@ -76,6 +77,12 @@ from src.utils import DATA_DIR, HYBRID_CHECKPOINT, get_graph_origin
 DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
 JUDGE_PIN_MIN_DELTA = 2.0  # Soft check when comparing on the pinned corridor
 EXIT_OVERRIDE_CLICK_M = 90.0  # map click near an exit pin → silent override
+SUGGESTED_CLICK_M = 160.0  # click near suggested apartment → arm win-corridor check
+# Stale Cloud demo PHN mix reports ≈45.3% and typically ties Classical.
+STALE_Q_PCT_LO = 40.0
+STALE_Q_PCT_HI = 52.0
+EXPECTED_HYBRID_Q_PCT = 77.6
+EXPECTED_HYBRID_SHA16 = "1ae31d03b3a4503d"
 
 HYBRID_ROUTE_COLOR = "#00E5FF"
 CLASSICAL_ROUTE_COLOR = "#F5C542"
@@ -83,6 +90,9 @@ DIJKSTRA_ROUTE_COLOR = "#E8EEF6"
 HAZARD_ROUTE_COLOR = "#FF4D6A"
 ORANGE_ACCENT = "#FF8A4C"
 DISRUPTION_COLOR = "#F5A623"  # amber — not purple
+FAULT_LINE_COLOR = "#FF6B4A"
+START_DOT_COLOR = "#3B82F6"
+CANDIDATE_EDGE_COLOR = "#7EEFFF"
 
 MAP_H = 820  # concrete Folium px height (avoid % → black map)
 
@@ -191,6 +201,13 @@ st.markdown(
     .qr-card .value.gold { color: var(--qr-gold); }
     .qr-card .value.dij { color: var(--qr-dij); }
     .qr-card .sub { color: var(--qr-mist); font-size: 0.8rem; margin-top: 0.25rem; }
+    .qr-prob {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem; color: #9AA8BC; line-height: 1.45;
+      max-height: 9.5rem; overflow-y: auto;
+      padding: 0.35rem 0.15rem;
+    }
+    .qr-prob .hi { color: #00E5FF; font-weight: 600; }
     .qr-ro {
       background: rgba(10,15,30,0.65);
       border: 1px solid rgba(154,168,188,0.16);
@@ -480,6 +497,207 @@ def _no_click(layer):
     except Exception:
         pass
     return layer
+
+
+def _fault_line_latlons(
+    epi_lat: float, epi_lon: float, *, half_span_deg: float = 0.012
+) -> List[List[float]]:
+    """
+    Simple West Valley–style axis through the epicenter (NNW–SSE).
+
+    Fault line → rupture → epicenter → near-epi broken roads. Fixed geometry
+    for the Intramuros demo (not a geologic survey product).
+    """
+    # Bearing ≈ 25° west of north (Manila trench / Valley Fault feel).
+    dlat = half_span_deg * 0.92
+    dlon = half_span_deg * 0.40
+    return [
+        [float(epi_lat) - dlat, float(epi_lon) - dlon],
+        [float(epi_lat), float(epi_lon)],
+        [float(epi_lat) + dlat, float(epi_lon) + dlon],
+    ]
+
+
+def _draw_fault_line_on_map(m, epi_lat: float, epi_lon: float) -> None:
+    """Draw the demo fault polyline under hazard rings / routes."""
+    coords = _fault_line_latlons(epi_lat, epi_lon)
+    _no_click(
+        folium.PolyLine(
+            coords,
+            color=FAULT_LINE_COLOR,
+            weight=5,
+            opacity=0.85,
+            dash_array="10 6",
+            tooltip="Fault line (demo axis through epicenter)",
+        )
+    ).add_to(m)
+    # Soft glow underlay
+    _no_click(
+        folium.PolyLine(
+            coords,
+            color=FAULT_LINE_COLOR,
+            weight=12,
+            opacity=0.18,
+        )
+    ).add_to(m)
+
+
+def _draw_start_blue_dot(m, lat: float, lon: float, *, tooltip: str = "Your location") -> None:
+    """Clear blue start point (primary visual — not only a house icon)."""
+    _no_click(
+        folium.CircleMarker(
+            [lat, lon],
+            radius=11,
+            color="#E8EEF6",
+            weight=2,
+            fill=True,
+            fill_color=START_DOT_COLOR,
+            fill_opacity=0.95,
+            tooltip=tooltip,
+        )
+    ).add_to(m)
+    _no_click(
+        folium.CircleMarker(
+            [lat, lon],
+            radius=4,
+            color="#fff",
+            weight=1,
+            fill=True,
+            fill_color="#fff",
+            fill_opacity=1.0,
+        )
+    ).add_to(m)
+
+
+def _fmt_prob(p) -> str:
+    try:
+        if p is None:
+            return "—"
+        fv = float(p)
+        if not np.isfinite(fv):
+            return "—"
+        if fv >= 0.01:
+            return f"{fv * 100:.1f}%"
+        return f"{fv:.2e}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _path_anim_step(path) -> int:
+    """Current animation hop index into ``path`` (0 = start node)."""
+    if not path or len(path) < 1:
+        return 0
+    max_i = len(path) - 1
+    try:
+        step = int(st.session_state.get("path_anim_step", max_i))
+    except (TypeError, ValueError):
+        step = max_i
+    return max(0, min(step, max_i))
+
+
+def _draw_hybrid_path_animation(
+    m,
+    G,
+    path,
+    step_trace: Optional[List] = None,
+    *,
+    step: int,
+) -> None:
+    """
+    Draw Hybrid route up to ``step`` with hop probability tooltips and a
+    moving blue agent at the current node (Streamlit-safe redraw, no AntPath).
+    """
+    if not path or len(path) < 2:
+        return
+    step = max(0, min(int(step), len(path) - 1))
+    partial = path[: step + 1]
+    coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial if n in G.nodes]
+    if len(coords) >= 2:
+        _no_click(
+            folium.PolyLine(
+                coords,
+                color=HYBRID_ROUTE_COLOR,
+                weight=6,
+                opacity=0.95,
+                tooltip="Hybrid escape path",
+            )
+        ).add_to(m)
+
+    # Chosen edges with probability labels (midpoint markers).
+    trace = step_trace or []
+    for i in range(min(step, len(trace))):
+        entry = trace[i] if i < len(trace) else {}
+        u, v = path[i], path[i + 1]
+        if u not in G.nodes or v not in G.nodes:
+            continue
+        lat_m = 0.5 * (float(G.nodes[u]["y"]) + float(G.nodes[v]["y"]))
+        lon_m = 0.5 * (float(G.nodes[u]["x"]) + float(G.nodes[v]["x"]))
+        p = entry.get("prob")
+        tip = f"Hop {i + 1} · P={_fmt_prob(p)}"
+        if entry.get("mode") and entry.get("mode") != "ml":
+            tip += f" · {entry['mode']}"
+        _no_click(
+            folium.CircleMarker(
+                [lat_m, lon_m],
+                radius=3,
+                color=HYBRID_ROUTE_COLOR,
+                weight=1,
+                fill=True,
+                fill_color="#041018",
+                fill_opacity=0.9,
+                tooltip=tip,
+            )
+        ).add_to(m)
+
+    # At the live node: faint candidate next-hop edges with probs.
+    if step < len(path) - 1 and step < len(trace):
+        entry = trace[step]
+        cur = path[step]
+        if cur in G.nodes:
+            for cand in (entry.get("candidates") or [])[:5]:
+                nb = cand.get("node")
+                if nb is None or nb not in G.nodes:
+                    continue
+                chosen = bool(cand.get("chosen"))
+                p = cand.get("prob")
+                _no_click(
+                    folium.PolyLine(
+                        [
+                            [G.nodes[cur]["y"], G.nodes[cur]["x"]],
+                            [G.nodes[nb]["y"], G.nodes[nb]["x"]],
+                        ],
+                        color=HYBRID_ROUTE_COLOR if chosen else CANDIDATE_EDGE_COLOR,
+                        weight=5 if chosen else 2,
+                        opacity=0.95 if chosen else 0.45,
+                        dash_array=None if chosen else "2 6",
+                        tooltip=f"P={_fmt_prob(p)}" + (" · chosen" if chosen else ""),
+                    )
+                ).add_to(m)
+
+    # Moving blue agent at current path node.
+    cur_node = path[step]
+    if cur_node in G.nodes:
+        lat = float(G.nodes[cur_node]["y"])
+        lon = float(G.nodes[cur_node]["x"])
+        label = (
+            "Start"
+            if step == 0
+            else ("Exit" if step == len(path) - 1 else f"Hop {step}")
+        )
+        _draw_start_blue_dot(
+            m, lat, lon, tooltip=f"Agent · {label} · node {cur_node}"
+        )
+        # Outer pulse ring for visibility while animating.
+        _no_click(
+            folium.CircleMarker(
+                [lat, lon],
+                radius=18,
+                color=START_DOT_COLOR,
+                weight=2,
+                fill=False,
+                opacity=0.55,
+            )
+        ).add_to(m)
 
 
 def _set_epicenter(lat: float, lon: float) -> None:
@@ -852,6 +1070,11 @@ def _clear_route_results():
         "deferred_note",
         "primary_engine",
         "_step_reveal",
+        "step_trace",
+        "path_logprob",
+        "path_prob_product",
+        "path_anim_step",
+        "path_anim_playing",
     ):
         st.session_state.pop(k, None)
 
@@ -1393,18 +1616,188 @@ def _hybrid_ckpt_debug() -> Dict[str, Any]:
         "path": str(path),
         "exists": path.exists(),
         "sha16": None,
+        "sha256": None,
         "mtime_utc": None,
         "size": None,
     }
     if not path.exists():
         return out
     data = path.read_bytes()
-    out["sha16"] = hashlib.sha256(data).hexdigest()[:16]
+    digest = hashlib.sha256(data).hexdigest()
+    out["sha256"] = digest
+    out["sha16"] = digest[:16]
     out["size"] = len(data)
     out["mtime_utc"] = datetime.fromtimestamp(
         path.stat().st_mtime, tz=timezone.utc
     ).strftime("%Y-%m-%d %H:%M UTC")
     return out
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres (WGS84 approx)."""
+    r = 6_371_000.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlmb = np.radians(lon2 - lon1)
+    a = (
+        np.sin(dphi / 2.0) ** 2
+        + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2.0) ** 2
+    )
+    return float(2.0 * r * np.arcsin(np.sqrt(min(1.0, float(a)))))
+
+
+def _suggested_apartment_coords(
+    scenario: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Known-good apartment / start from demo_scenarios.json (qa_1 pin).
+
+    Audience clicks this faint marker so free-click doesn't land in a tie zone.
+    """
+    sc = scenario if scenario is not None else _judge_pinned_scenario()
+    if not sc:
+        return None
+    jd = sc.get("_judge_demo") or {}
+    lat = jd.get("suggested_start_lat", sc.get("start_lat"))
+    lon = jd.get("suggested_start_lon", sc.get("start_lon"))
+    node = jd.get("suggested_start_node", sc.get("start_node"))
+    if lat is None or lon is None:
+        return None
+    return {
+        "lat": float(lat),
+        "lon": float(lon),
+        "node": node,
+        "hint": str(
+            jd.get("click_hint")
+            or "Faint cyan ring · NW apartment — click here for Hybrid win"
+        ),
+        "scenario_id": sc.get("id") or jd.get("scenario_id") or "qa_1",
+        "best_exit": sc.get("best_exit") or jd.get("best_exit"),
+        "best_exit_label": (
+            jd.get("best_exit_label")
+            or sc.get("best_exit_label")
+            or "North Gate · NW"
+        ),
+    }
+
+
+def _expected_hybrid_fingerprint() -> Dict[str, Any]:
+    """Expected q% / sha16 from demo_scenarios.json (fallback to constants)."""
+    payload = _load_demo_scenarios() or {}
+    jd = payload.get("judge_demo") or {}
+    q = (
+        jd.get("expected_quantum_contribution_pct")
+        or payload.get("quantum_contribution_pct")
+        or EXPECTED_HYBRID_Q_PCT
+    )
+    sha16 = jd.get("expected_hybrid_sha16") or EXPECTED_HYBRID_SHA16
+    try:
+        q_f = float(q)
+    except (TypeError, ValueError):
+        q_f = float(EXPECTED_HYBRID_Q_PCT)
+    return {"q_pct": q_f, "sha16": str(sha16)}
+
+
+def _is_stale_hybrid_q(q_contrib: Optional[float], *, demo_mode: bool = False) -> bool:
+    """True when Cloud is still on the demo PHN mix (~45.3%) or demo_mode ckpt."""
+    if demo_mode:
+        return True
+    if q_contrib is None:
+        return False
+    return STALE_Q_PCT_LO <= float(q_contrib) <= STALE_Q_PCT_HI
+
+
+def _show_hybrid_ckpt_fingerprint(
+    q_live: Optional[float],
+    *,
+    demo_mode: bool,
+    ckpt: Dict[str, Any],
+    expected: Dict[str, Any],
+) -> None:
+    """Always-visible loaded-bytes pin so Cloud reboot can be verified."""
+    q_txt = f"{q_live:.1f}%" if q_live is not None else "N/A"
+    sha = ckpt.get("sha16") or "—"
+    size = ckpt.get("size")
+    size_txt = f"{size} B" if isinstance(size, int) else "—"
+    mtime = ckpt.get("mtime_utc") or "—"
+    exp_sha = expected.get("sha16") or EXPECTED_HYBRID_SHA16
+    exp_q = expected.get("q_pct", EXPECTED_HYBRID_Q_PCT)
+    match = (
+        sha != "—"
+        and str(sha) == str(exp_sha)
+        and q_live is not None
+        and abs(float(q_live) - float(exp_q)) <= 2.0
+        and not demo_mode
+    )
+    line = (
+        f"**Loaded Hybrid** · q% **{q_txt}** · sha16 `{sha}` · "
+        f"size {size_txt} · demo_mode={demo_mode} · mtime {mtime} · "
+        f"expect q≈{float(exp_q):.1f}% / sha16 `{exp_sha}`"
+    )
+    if match:
+        st.success(line + " · **PIN OK**")
+    else:
+        st.info(line)
+
+
+def _warn_stale_hybrid_checkpoint() -> Optional[float]:
+    """
+    Big warning when loaded Hybrid reports ~45% quantum (wrong Cloud checkpoint).
+
+    Always shows loaded sha16 / q% so a Cloud reboot can be verified against the
+    local pin (expect ≈77.6%, sha16 ``1ae31d03b3a4503d``).
+
+    Returns live q% when available (for captions).
+    """
+    q_live: Optional[float] = None
+    demo_mode = False
+    expected = _expected_hybrid_fingerprint()
+    ckpt = _hybrid_ckpt_debug()
+    try:
+        if not Path(HYBRID_CHECKPOINT).exists():
+            st.error(
+                "**Wrong / missing Hybrid checkpoint** — `models/film_hybrid.pt` "
+                "is absent, so Cloud built an in-memory demo PHN (~45.3% quantum). "
+                "Upload the trained `models/film_hybrid.pt` (expect quantum "
+                f"≈{EXPECTED_HYBRID_Q_PCT:.1f}%, sha16 `{EXPECTED_HYBRID_SHA16}`), "
+                "then **Redeploy / Reboot**. Until then Hybrid often **ties** Classical."
+            )
+            _show_hybrid_ckpt_fingerprint(
+                45.3, demo_mode=True, ckpt=ckpt, expected=expected
+            )
+            return 45.3
+        hybrid_model, _, _ = get_hybrid_model()
+        demo_mode = bool(getattr(hybrid_model, "demo_mode", False))
+        q_live = estimate_quantum_contribution_pct(hybrid_model)
+    except Exception as exc:
+        st.warning(f"Could not inspect Hybrid checkpoint ({type(exc).__name__}).")
+        _show_hybrid_ckpt_fingerprint(
+            None, demo_mode=demo_mode, ckpt=ckpt, expected=expected
+        )
+        return None
+
+    stale = _is_stale_hybrid_q(q_live, demo_mode=demo_mode)
+    sha_mismatch = bool(
+        ckpt.get("sha16")
+        and expected.get("sha16")
+        and str(ckpt["sha16"]) != str(expected["sha16"])
+    )
+    _show_hybrid_ckpt_fingerprint(
+        q_live, demo_mode=demo_mode, ckpt=ckpt, expected=expected
+    )
+    if stale or (sha_mismatch and (stale or demo_mode or (
+        q_live is not None and float(q_live) < float(expected["q_pct"]) - 10
+    ))):
+        q_txt = f"{q_live:.1f}%" if q_live is not None else "N/A"
+        st.error(
+            f"**Stale / wrong Hybrid checkpoint on Cloud** — quantum **{q_txt}** "
+            f"(demo mix ≈45.3% or old ~35–42% train) · expected ≈**{expected['q_pct']:.1f}%**. "
+            f"Replace **`models/film_hybrid.pt`** on GitHub "
+            f"(sha16 `{expected['sha16']}`, size ≈157322 B, `demo_mode=False`), "
+            f"then **Redeploy** (not reboot-only if the file never landed). "
+            f"Wrong file → Hybrid **ties** Classical."
+        )
+    return q_live
 
 
 def _judge_damage_params(scenario: Dict[str, Any]) -> Dict[str, int]:
@@ -1600,8 +1993,16 @@ def _load_fixed_scenario(G) -> str:
             if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
                 st.session_state["disaster_active"] = True
-            # Frame map on the epi / apartment corridor (not a user location yet).
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+            # Frame map on the suggested apartment corridor (known Hybrid win zone).
+            sug = _suggested_apartment_coords(sc)
+            if sug is not None:
+                st.session_state["suggested_start_lat"] = sug["lat"]
+                st.session_state["suggested_start_lon"] = sug["lon"]
+                st.session_state["suggested_start_node"] = sug.get("node")
+                st.session_state["suggested_click_hint"] = sug["hint"]
+                st.session_state["map_center"] = [sug["lat"], sug["lon"]]
+                st.session_state["map_zoom"] = 16
+            elif sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 st.session_state["map_center"] = [
                     float(sc["epi_lat"]),
                     float(sc["epi_lon"]),
@@ -1613,9 +2014,12 @@ def _load_fixed_scenario(G) -> str:
                 ]
             st.session_state["fixed_scenario_id"] = sc.get("id")
             sid = sc.get("id") or "qa_1"
+            hint = (sug or {}).get("hint") if sug else None
             msg = (
                 f"Fixed scenario · {sid} · epicenter + broken roads near epi "
-                f"({n} amber edges). Click the map to set your location."
+                f"({n} amber edges). Click the faint cyan apartment ring, then "
+                f"Find escape route."
+                + (f" · {hint}" if hint else "")
             )
         else:
             lat, lon = _mild_default_epi(G)
@@ -1791,6 +2195,91 @@ def _evaluate_demo_pin(
     st.session_state["is_hybrid_route"] = False
 
 
+def _arm_judge_if_near_suggested(G, lat: float, lon: float) -> bool:
+    """Arm Escape win-corridor check when click is near the suggested apartment."""
+    sug = _suggested_apartment_coords()
+    if sug is None:
+        st.session_state.pop("judge_demo_armed", None)
+        return False
+    dist = _haversine_m(float(lat), float(lon), sug["lat"], sug["lon"])
+    node = st.session_state.get("start_node")
+    near_node = (
+        sug.get("node") is not None
+        and node is not None
+        and node == sug.get("node")
+    )
+    if dist <= SUGGESTED_CLICK_M or near_node:
+        st.session_state["judge_demo_armed"] = True
+        st.session_state["judge_scenario_id"] = sug.get("scenario_id") or "qa_1"
+        return True
+    st.session_state.pop("judge_demo_armed", None)
+    return False
+
+
+def _draw_suggested_apartment_on_map(m, G) -> None:
+    """Faint cyan apartment marker — known-good Hybrid win start (no auto-run)."""
+    sug = _suggested_apartment_coords()
+    if sug is None:
+        return
+    lat, lon = sug["lat"], sug["lon"]
+    # Prefer graph-snapped coords when the pinned node is present.
+    node = sug.get("node")
+    if node is not None and node in G.nodes:
+        lat = float(G.nodes[node]["y"])
+        lon = float(G.nodes[node]["x"])
+    tip = sug.get("hint") or "Suggested apartment · click here"
+    # Skip duplicate when user already snapped exactly onto the pin.
+    start = st.session_state.get("start_node")
+    if (
+        st.session_state.get("location_set")
+        and start is not None
+        and node is not None
+        and start == node
+    ):
+        return
+    _no_click(
+        folium.CircleMarker(
+            [lat, lon],
+            radius=16,
+            color="#00E5FF",
+            weight=2,
+            fill=True,
+            fill_color="#00E5FF",
+            fill_opacity=0.12,
+            opacity=0.55,
+            tooltip=tip,
+        )
+    ).add_to(m)
+    _no_click(
+        folium.CircleMarker(
+            [lat, lon],
+            radius=6,
+            color="#00E5FF",
+            weight=2,
+            fill=True,
+            fill_color="#0a0f1e",
+            fill_opacity=0.35,
+            opacity=0.7,
+            tooltip=tip,
+        )
+    ).add_to(m)
+    _no_click(
+        folium.Marker(
+            [lat, lon],
+            icon=folium.DivIcon(
+                html=(
+                    '<div style="font-size:10px;font-weight:600;color:#7EEFFF;'
+                    "opacity:0.85;white-space:nowrap;text-shadow:0 1px 2px #041018;"
+                    'margin-left:10px;margin-top:-6px;">Suggested apartment</div>'
+                ),
+                icon_size=(140, 18),
+                icon_anchor=(0, 0),
+            ),
+            tooltip=tip,
+        )
+    ).add_to(m)
+
+
 def _set_location(G, lat: float, lon: float) -> None:
     """Snap user start / apartment to nearest graph node."""
     node = snap_to_nearest_node(G, float(lat), float(lon))
@@ -1806,6 +2295,11 @@ def _set_location(G, lat: float, lon: float) -> None:
         float(st.session_state["loc_lat"]),
         float(st.session_state["loc_lon"]),
     ]
+    _arm_judge_if_near_suggested(
+        G,
+        float(st.session_state["loc_lat"]),
+        float(st.session_state["loc_lon"]),
+    )
 
 
 def _init_session(G, nodes, origin):
@@ -1862,7 +2356,16 @@ def _apply_map_click(G, lat: float, lon: float) -> str:
     except Exception:
         rec = f"Evacuate exit held · node {st.session_state.get('dest_node')}."
     label = _landmark_label_for(G, st.session_state.get("dest_node"))
-    msg = f"Location set · recommended {label}."
+    if st.session_state.get("judge_demo_armed"):
+        msg = (
+            f"Suggested apartment · recommended {label}. "
+            "Press Find escape route for the Hybrid probability path."
+        )
+    else:
+        msg = (
+            f"Location set · recommended {label}. "
+            "(For the Hybrid win corridor, click the faint cyan Suggested apartment.)"
+        )
     st.session_state["map_status"] = msg
     _ = rec
     return msg
@@ -1879,12 +2382,13 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Earthquake Escape — click map · find route · Hybrid vs Classical</div>',
+        '<div class="qr-tagline">Earthquake Escape — Hybrid finds the high-probability path</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Map shows epicenter, 5 evacuate exits, and broken roads near epicenter. '
-        "Click to set your location → see the recommended exit → <b>Find escape route</b>."
+        '<div class="qr-tag">Fault line → epicenter → broken roads near epi. '
+        "Click map for a <b>blue start</b> → recommended exit → <b>Find escape route</b> "
+        "→ watch the agent hop node-by-node with next-hop probabilities."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1893,6 +2397,7 @@ def main():
 
     qstat = quantum_status()
     pl_ok = qstat["pennylane_available"]
+    _warn_stale_hybrid_checkpoint()
 
     try:
         G = get_graph()
@@ -1937,20 +2442,23 @@ def main():
     # ------------------------------------------------------------------
     with panel_col:
         badge = (
-            f'<span class="qr-badge ok">PennyLane · {qstat["n_qubits"]}-qubit HQNN</span>'
+            f'<span class="qr-badge ok">PennyLane sim · {qstat["n_qubits"]}-qubit PHN</span>'
             if pl_ok
             else '<span class="qr-badge warn">PennyLane unavailable · Classical only</span>'
         )
         st.markdown(
             f'<div class="qr-panel"><h3>Earthquake Escape</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
-            "Click the map → recommended exit → <b style='color:#E8EEF6'>Find escape route</b>."
+            "Click map → <b style='color:#3B82F6'>blue start</b> → recommended exit → "
+            "<b style='color:#E8EEF6'>Find escape route</b>. "
+            "Hybrid picks the highest next-hop probability at each step."
             "</p>"
             '<div class="qr-legend">'
-            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Cyan = Hybrid</span>'
-            f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Gold = Classical</span>'
-            f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>White = Dijkstra</span>'
-            f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Red = hazard</span>'
+            f'<span><i style="background:{FAULT_LINE_COLOR}"></i>Fault line</span>'
+            f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Epicenter / hazard</span>'
+            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Broken roads</span>'
+            f'<span><i style="background:{START_DOT_COLOR}"></i>Blue start / agent</span>'
+            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid path</span>'
             f'<span><i style="background:#F5C542"></i>Gold star = best exit</span>'
             "</div></div>",
             unsafe_allow_html=True,
@@ -1985,11 +2493,14 @@ def main():
                 unsafe_allow_html=True,
             )
         else:
+            sug_hint = st.session_state.get("suggested_click_hint") or (
+                "Click the faint cyan Suggested apartment (NW, west of epi)"
+            )
             st.markdown(
                 '<div class="qr-oneliner">Your location · '
-                "<span>click the map</span>"
-                '<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
-                "Epicenter, 5 exits, and broken roads near epicenter are already on the map"
+                "<span>click Suggested apartment</span>"
+                f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+                f"{sug_hint}"
                 "</span></div>",
                 unsafe_allow_html=True,
             )
@@ -2001,13 +2512,13 @@ def main():
             use_container_width=True,
             key="btn_find_escape",
             disabled=not location_set,
-            help="Compare Hybrid · Classical · Dijkstra to the recommended evacuate exit",
+            help="Roll out Hybrid policy with per-hop probabilities to the recommended exit",
         ):
             run = True
 
         st.caption(st.session_state.get("map_status", ""))
 
-        # Hazard scrub: clamp BEFORE widget; never write after (Streamlit owns key).
+        # Clamp hazard scrub range (used when no route yet).
         _path_for_scrub = st.session_state.get("path")
         _radii_for_scrub = st.session_state.get("radii_trace")
         if (
@@ -2029,13 +2540,14 @@ def main():
                 st.session_state["hazard_t_scrub"] = _scrub_max_t
             elif _prev_scrub < 0:
                 st.session_state["hazard_t_scrub"] = 0
-        if _disaster_active():
+
+        if (not _path_for_scrub or len(_path_for_scrub) < 2) and _disaster_active():
             st.slider(
                 "Hazard time t",
                 0,
                 _scrub_max_t,
                 key="hazard_t_scrub",
-                help="Epicenter damage radius grows with t — scrub after routes draw",
+                help="Epicenter damage radius grows with t",
             )
 
         start = st.session_state.get("start_node")
@@ -2047,7 +2559,7 @@ def main():
             use_hybrid = bool(pl_ok)
             hybrid_fell_back = False
             try:
-                with st.spinner("Routing Hybrid · Classical · Dijkstra…"):
+                with st.spinner("Routing Hybrid escape path…"):
                     hybrid_model = None
                     mean = std = None
                     if use_hybrid:
@@ -2071,7 +2583,7 @@ def main():
 
                     hero_model = hybrid_model if use_hybrid else classical_model
                     label = (
-                        "Hybrid QML (HQNN)"
+                        "Hybrid QML (PHN · sim)"
                         if use_hybrid and not hybrid_fell_back
                         else "Classical FiLM (ablation)"
                     )
@@ -2302,6 +2814,17 @@ def main():
                             "epi": (epi_lon, epi_lat),
                             "start": start,
                             "dest": dest,
+                            "step_trace": list(
+                                h.get("step_trace")
+                                or (route_meta or {}).get("step_trace")
+                                or []
+                            ),
+                            "path_logprob": h.get("path_logprob")
+                            or (route_meta or {}).get("path_logprob"),
+                            "path_prob_product": h.get("path_prob_product")
+                            or (route_meta or {}).get("path_prob_product"),
+                            "path_anim_step": 0,
+                            "path_anim_playing": True,
                         }
                     )
                     _evaluate_demo_pin(
@@ -2326,7 +2849,7 @@ def main():
                         toast_icon = "⚠️"
                     else:
                         toast_msg = (
-                            "Escape route ready — Hybrid vs Classical vs Dijkstra."
+                            "Escape route ready — play the blue agent hop-by-hop."
                         )
                         toast_icon = "✅"
                     try:
@@ -2352,7 +2875,6 @@ def main():
             classical_safety = st.session_state.get("classical_safety")
             dij_safety = st.session_state.get("dij_safety")
             accuracy = float(st.session_state.get("accuracy", 0.0))
-            classical_accuracy = float(st.session_state.get("classical_accuracy", 0.0))
             _q_raw = st.session_state.get("q_contrib")
             try:
                 q_contrib = float(_q_raw) if _q_raw is not None else None
@@ -2366,9 +2888,10 @@ def main():
             is_hybrid = bool(st.session_state.get("is_hybrid_route")) and not hybrid_deferred
             classical_path = st.session_state.get("classical_path")
             dij_path = st.session_state.get("dij_path")
+            step_trace = st.session_state.get("step_trace") or []
+            path_logprob = st.session_state.get("path_logprob")
+            path_prob_product = st.session_state.get("path_prob_product")
 
-            # Strict travel win only; within 2% counts as a tie (not a "beat").
-            # Never HERO when Hybrid was deferred to Classical.
             beats_classical = False
             ties_classical = False
             safer_than_classical = False
@@ -2414,7 +2937,55 @@ def main():
                 if narrative.get("hybrid_near_dijkstra") is not None:
                     near_dij = bool(narrative["hybrid_near_dijkstra"])
 
-            st.markdown('<div class="qr-panel"><h3>Hybrid vs Classical</h3></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="qr-panel"><h3>Hybrid escape route</h3></div>',
+                unsafe_allow_html=True,
+            )
+
+            # Animation controls (after route exists so first Find paints them).
+            _anim_max = max(0, len(path) - 1)
+            if "path_anim_step" not in st.session_state:
+                st.session_state["path_anim_step"] = 0
+            else:
+                st.session_state["path_anim_step"] = max(
+                    0, min(int(st.session_state.get("path_anim_step", 0)), _anim_max)
+                )
+            st.markdown("**Escape animation**")
+            a1, a2, a3, a4 = st.columns(4)
+            with a1:
+                if st.button("⏮", key="anim_reset", use_container_width=True, help="Reset to start"):
+                    st.session_state["path_anim_step"] = 0
+                    st.session_state["path_anim_playing"] = False
+                    st.rerun()
+            with a2:
+                if st.button("▶ Play", key="anim_play", use_container_width=True):
+                    st.session_state["path_anim_playing"] = True
+                    st.rerun()
+            with a3:
+                if st.button("⏸", key="anim_pause", use_container_width=True):
+                    st.session_state["path_anim_playing"] = False
+                    st.rerun()
+            with a4:
+                if st.button("⏭", key="anim_step", use_container_width=True, help="Advance one hop"):
+                    st.session_state["path_anim_playing"] = False
+                    cur = int(st.session_state.get("path_anim_step", 0))
+                    st.session_state["path_anim_step"] = min(cur + 1, _anim_max)
+                    st.rerun()
+            _cur_anim = max(0, min(int(st.session_state.get("path_anim_step", 0)), _anim_max))
+            _new_anim = st.slider(
+                "Path hop",
+                0,
+                _anim_max,
+                value=_cur_anim,
+                help="Blue agent moves node-by-node along the Hybrid path",
+            )
+            if int(_new_anim) != _cur_anim:
+                st.session_state["path_anim_step"] = int(_new_anim)
+                st.session_state["path_anim_playing"] = False
+            anim_step = _path_anim_step(path)
+            st.caption(
+                f"Hop {anim_step}/{_anim_max} · hazard rings track the same step"
+            )
 
             pin_failed = bool(st.session_state.get("demo_pin_failed"))
             if pin_failed:
@@ -2422,60 +2993,40 @@ def main():
                     "**Demo pin failed — Hybrid not loaded or wrong checkpoint**\n\n"
                     + (st.session_state.get("demo_pin_fail_detail") or "")
                 )
-                # Never decorate a failed pin as a win / tie success.
                 beats_classical = False
                 ties_classical = False
                 safety_win = False
                 near_dij = False
+            elif _is_stale_hybrid_q(
+                q_contrib,
+                demo_mode=bool(st.session_state.get("demo_hybrid")),
+            ):
+                st.error(
+                    f"Quantum **{q_contrib:.1f}%** ≈ demo mix 45.3% — Cloud still has the "
+                    "wrong `film_hybrid.pt`. Upload the trained checkpoint "
+                    f"(expect ≈{EXPECTED_HYBRID_Q_PCT:.1f}%, sha16 `{EXPECTED_HYBRID_SHA16}`), "
+                    "Reboot, then click map → Find escape route."
+                )
 
             if hybrid_deferred and deferred_note and not pin_failed:
                 st.warning(deferred_note)
-                reason = st.session_state.get("deferred_reason") or ""
-                if reason == "catastrophic":
-                    st.caption(
-                        "Honest reliability note: this run hit the catastrophic band "
-                        f"(Hybrid travel > {HYBRID_CATASTROPHIC_RATIO:.2f}× Classical). "
-                        "Primary recommendation is Classical — HERO is not shown."
-                    )
-                elif reason:
-                    st.caption(
-                        "Primary recommendation is Classical this run. "
-                        "HERO is reserved for true Hybrid wins only."
-                    )
 
-            # Read-only: slider lives above (epicenter controls). Do not write
-            # hazard_t_scrub here — widget already owns that key this run.
+            # Hazard caption synced to animation hop (no second scrubber write).
             radii_for_scrub = st.session_state.get("radii_trace")
-            if _disaster_active():
-                if radii_for_scrub and path and len(path) >= 2:
-                    max_t = max(0, len(radii_for_scrub) - 1)
-                else:
-                    max_t = 60
-                try:
-                    t_scrub = int(st.session_state.get("hazard_t_scrub", max_t))
-                except (TypeError, ValueError):
-                    t_scrub = max_t
-                t_scrub = max(0, min(t_scrub, max_t))
-                if radii_for_scrub and path and len(path) >= 2:
-                    st.session_state["_step_reveal"] = min(
-                        int(t_scrub) + 1, len(path) - 1
-                    )
+            if _disaster_active() and radii_for_scrub and path and len(path) >= 2:
+                max_t = max(0, len(radii_for_scrub) - 1)
+                t_scrub = max(0, min(int(anim_step), max_t))
+                st.session_state["_step_reveal"] = min(t_scrub, len(path) - 1)
                 r_now = float(damage_radius(float(t_scrub)))
-                if (
-                    radii_for_scrub
-                    and 0 <= int(t_scrub) < len(radii_for_scrub)
-                ):
-                    r_now = float(radii_for_scrub[int(t_scrub)]["r_epi"])
+                if 0 <= t_scrub < len(radii_for_scrub):
+                    r_now = float(radii_for_scrub[t_scrub]["r_epi"])
                 st.caption(
-                    f"Disaster feed · epicenter radius grows with t · "
-                    f"r_epi(t) = 0.5 + √(0.0002·t) = **{r_now:.3f} km** "
-                    f"· scrub t={t_scrub}/{max_t} above"
+                    f"Hazard rings follow the agent · "
+                    f"r_epi ≈ **{r_now:.3f} km** · hop {t_scrub}/{max_t}"
                 )
             else:
                 st.session_state.pop("_step_reveal", None)
 
-            # Honest HERO: only when Hybrid strictly beats Classical on travel,
-            # or travel-tie (≤2%) with higher safety. Never decorate a loss or fallback.
             show_hero = bool(
                 not hybrid_deferred
                 and not pin_failed
@@ -2486,9 +3037,9 @@ def main():
                 '<span class="qr-hero-pill">HERO</span>' if show_hero else ""
             )
             hybrid_sub = (
-                "Deferred this run · faded on map"
+                "Deferred this run"
                 if hybrid_deferred
-                else "Cyan · local quantum-classical"
+                else "Quantum-inspired Hybrid policy (sim)"
             )
             st.markdown(
                 f'<div class="qr-card hybrid{win}">'
@@ -2498,29 +3049,57 @@ def main():
                 f'<div class="sub">{hybrid_sub}</div></div>',
                 unsafe_allow_html=True,
             )
-            c_val = (
-                f"{float(classical_travel):.1f}"
-                if classical_travel is not None and classical_path
+
+            # Path probability score (product of chosen next-hop softmax probs).
+            prod_txt = _fmt_prob(path_prob_product)
+            logp_txt = (
+                f"{float(path_logprob):.2f}"
+                if path_logprob is not None and np.isfinite(float(path_logprob))
                 else "—"
             )
-            d_val = (
-                f"{float(dij_travel):.1f}"
-                if dij_travel is not None and dij_path
-                else "—"
-            )
-            classical_sub = (
-                "Primary recommendation · Hybrid deferred"
-                if hybrid_deferred
-                else "Gold ablation · white dashed oracle"
+            n_prob = sum(
+                1 for e in step_trace if e.get("prob") is not None
             )
             st.markdown(
-                f'<div class="qr-card classical{" win" if hybrid_deferred else ""}">'
-                f'<div class="label">Classical · Dijkstra</div>'
-                f'<div class="value gold" style="font-size:1.35rem">{c_val}'
-                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
-                f'<span class="dij">{d_val}</span></div>'
-                f'<div class="sub">{classical_sub}</div></div>',
+                f'<div class="qr-card hybrid">'
+                f'<div class="label">Path probability score</div>'
+                f'<div class="value accent" style="font-size:1.35rem">{prod_txt}</div>'
+                f'<div class="sub">∏ chosen P(next|state) · {n_prob} scored hops · '
+                f"Σ log P = {logp_txt}</div></div>",
                 unsafe_allow_html=True,
+            )
+
+            # Live hop candidates at current animation step.
+            hop_rows = []
+            if anim_step < len(step_trace):
+                entry = step_trace[anim_step]
+                hop_rows.append(
+                    f'<div class="hi">Hop {anim_step + 1} · mode {entry.get("mode", "—")} · '
+                    f'chosen P={_fmt_prob(entry.get("prob"))}</div>'
+                )
+                for cand in (entry.get("candidates") or [])[:5]:
+                    mark = "→" if cand.get("chosen") else "·"
+                    hop_rows.append(
+                        f"{mark} node {cand.get('node')} · {_fmt_prob(cand.get('prob'))}"
+                    )
+            elif step_trace:
+                hop_rows.append(
+                    f'<div class="hi">At exit · path product {_fmt_prob(path_prob_product)}</div>'
+                )
+            else:
+                hop_rows.append("No per-hop probabilities recorded this run.")
+            st.markdown(
+                f'<div class="qr-card"><div class="label">Next-hop probabilities</div>'
+                f'<div class="qr-prob">{"".join(f"<div>{r}</div>" for r in hop_rows)}'
+                f"</div>"
+                f'<div class="sub">Softmax over neighbor logits · policy picks max P</div></div>',
+                unsafe_allow_html=True,
+            )
+
+            q_val = (
+                f"{q_contrib:.1f}%"
+                if is_hybrid and q_contrib is not None and q_contrib > 0
+                else ("N/A" if is_hybrid else "—")
             )
 
             def _fmt_safe(v) -> str:
@@ -2530,101 +3109,85 @@ def main():
                 except (TypeError, ValueError):
                     return "—"
 
-            h_min_epi = st.session_state.get("qml_min_epi_km")
-            c_min_epi = st.session_state.get("classical_min_epi_km")
-            d_min_epi = st.session_state.get("dij_min_epi_km")
-            min_epi_sub = (
-                f"min epi {_fmt_safe(h_min_epi)} / {_fmt_safe(c_min_epi)} / "
-                f"{_fmt_safe(d_min_epi)} km · higher score = farther"
-            )
-
-            s_win = " win" if safer_than_classical else ""
-            st.markdown(
-                f'<div class="qr-card hybrid{s_win}">'
-                f'<div class="label">Safety · Hybrid / Classical / Dijkstra</div>'
-                f'<div class="value" style="font-size:1.2rem">'
-                f'<span class="accent">{_fmt_safe(qml_safety)}</span>'
-                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
-                f'<span class="gold">{_fmt_safe(classical_safety)}</span>'
-                f' <span style="color:#9AA8BC;font-size:0.85rem">/</span> '
-                f'<span class="dij">{_fmt_safe(dij_safety)}</span></div>'
-                f'<div class="sub">{min_epi_sub}</div></div>',
-                unsafe_allow_html=True,
-            )
-
-            q_val = (
-                f"{q_contrib:.1f}%"
-                if is_hybrid and q_contrib is not None and q_contrib > 0
-                else ("N/A" if is_hybrid else "—")
-            )
             st.markdown(
                 f'<div class="qr-card">'
-                f'<div class="label">Reached · overlap · quantum</div>'
-                f'<div class="value" style="font-size:1.2rem">'
-                f'{"YES" if reached else "NO"} · {accuracy:.0f}% · {q_val}</div>'
-                f'<div class="sub">Exit reached · vs Dijkstra · PHN contrib</div></div>',
+                f'<div class="label">Reached · safety · quantum</div>'
+                f'<div class="value" style="font-size:1.15rem">'
+                f'{"YES" if reached else "NO"} · {_fmt_safe(qml_safety)} · {q_val}</div>'
+                f'<div class="sub">Exit · path safety score · PHN weight share</div></div>',
                 unsafe_allow_html=True,
             )
 
             if hybrid_deferred:
-                story = deferred_note or "Hybrid deferred · showing Classical"
+                story = deferred_note or "Hybrid deferred"
             elif pin_failed:
                 story = "Demo pin failed — Hybrid not loaded or wrong checkpoint"
-            elif beats_classical and near_dij:
-                story = "Hybrid beats Classical · near Dijkstra"
             elif beats_classical:
-                story = "Hybrid beats Classical"
-            elif safety_win and near_dij:
-                story = "Travel tie · Hybrid safer · near Dijkstra"
+                story = "Hybrid high-P path · beats Classical travel"
             elif safety_win:
                 story = "Travel tie · Hybrid safer"
-            elif ties_classical and near_dij:
-                story = "Hybrid ties Classical · near Dijkstra"
-            elif ties_classical:
-                story = "Hybrid ties Classical"
-            elif near_dij:
-                story = "Hybrid approaches Dijkstra"
             else:
-                story = f"{model_used} · local inference"
+                story = f"{model_used} · greedy max-P rollout"
             st.markdown(
-                f'<div class="qr-card{" win" if (not hybrid_deferred) and (not pin_failed) and (beats_classical or safety_win or near_dij) else ""}">'
+                f'<div class="qr-card{" win" if show_hero else ""}">'
                 f'<div class="label">Verdict</div>'
                 f'<div class="value" style="font-size:1.05rem">{story}</div></div>',
                 unsafe_allow_html=True,
             )
 
-            latency = st.session_state.get("latency_ms") or {}
-            if latency:
-                def _ms(v):
-                    return f"{v:.0f}" if isinstance(v, (int, float)) else "—"
-
-                st.caption(
-                    "Latency · H "
-                    f"{_ms(latency.get('hybrid'))} ms · C "
-                    f"{_ms(latency.get('classical'))} · D "
-                    f"{_ms(latency.get('dijkstra'))}"
+            with st.expander("Advanced · Classical / Dijkstra", expanded=False):
+                c_val = (
+                    f"{float(classical_travel):.1f}"
+                    if classical_travel is not None and classical_path
+                    else "—"
                 )
+                d_val = (
+                    f"{float(dij_travel):.1f}"
+                    if dij_travel is not None and dij_path
+                    else "—"
+                )
+                st.caption(
+                    f"Classical travel **{c_val}** · Dijkstra **{d_val}** · "
+                    f"Hybrid overlap vs Dijkstra **{accuracy:.0f}%** · "
+                    f"Classical safety {_fmt_safe(classical_safety)} · "
+                    f"Dijkstra safety {_fmt_safe(dij_safety)}"
+                )
+                latency = st.session_state.get("latency_ms") or {}
+                if latency:
+                    def _ms(v):
+                        return f"{v:.0f}" if isinstance(v, (int, float)) else "—"
 
-            with st.expander("Quantum Contribution", expanded=False):
+                    st.caption(
+                        "Latency · H "
+                        f"{_ms(latency.get('hybrid'))} ms · C "
+                        f"{_ms(latency.get('classical'))} · D "
+                        f"{_ms(latency.get('dijkstra'))}"
+                    )
                 q_line = (
                     f"≈ **{q_contrib:.1f}%** this run"
                     if q_contrib is not None and q_contrib > 0
                     else "N/A this run"
                 )
                 st.caption(
-                    f"{q_line} · "
+                    f"Quantum contribution {q_line} · "
                     "100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))"
                 )
+                show_cmp = st.checkbox(
+                    "Show Classical / Dijkstra paths on map",
+                    value=False,
+                    key="show_cmp_paths",
+                )
+                st.session_state["_draw_cmp_paths"] = bool(show_cmp)
         else:
             st.info(
-                "Click the map to set your location, then press **Find escape route** "
-                "to compare Hybrid · Classical · Dijkstra."
+                "Click the map to set a **blue start**, then press "
+                "**Find escape route** for the Hybrid probability path."
             )
 
         st.markdown(
             '<div class="qr-footer">'
             "Team 5 — Quantrio · QC4SG SEA Quantathon 2026<br/>"
-            "QuantumRelief · Earthquake Escape · Quantum Intelligence. Human Relief."
+            "QuantumRelief · Earthquake Escape · Hybrid high-probability routing."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -2639,6 +3202,7 @@ def main():
         hybrid_path_raw = st.session_state.get("hybrid_path_raw")
         hybrid_deferred = bool(st.session_state.get("hybrid_deferred"))
         radii_trace = st.session_state.get("radii_trace")
+        step_trace = st.session_state.get("step_trace") or []
         start_draw = st.session_state.get("start_node")
         dest_draw = st.session_state.get("dest_node")
         epi = (
@@ -2646,31 +3210,32 @@ def main():
             float(st.session_state.get("epi_lat") or origin[1]),
         )
         disaster_on = _disaster_active()
+        draw_cmp = bool(st.session_state.get("_draw_cmp_paths"))
         n_exits = len(st.session_state.get("exit_nodes") or [])
         st.caption(
-            f"Cyan Hybrid · gold Classical · white Dijkstra · "
-            f"gold pins = exits ({n_exits or N_EVACUATE_AREAS}) · "
-            f"click map = your location"
+            f"Fault line → epicenter → broken roads · "
+            f"blue start / agent · cyan Hybrid hops · "
+            f"exits ({n_exits or N_EVACUATE_AREAS})"
             + (" · red rings = hazard" if disaster_on else "")
-            + (" · faded cyan = deferred Hybrid" if hybrid_deferred else "")
+            + (" · Advanced comparison paths on" if draw_cmp else "")
         )
 
-        # Live scrubber t drives r_epi / rings when disaster is active.
-        step_reveal = st.session_state.get("_step_reveal")
+        # Animation hop drives hazard rings when a route is active.
+        anim_step = _path_anim_step(path) if path and len(path) >= 2 else 0
         if disaster_on:
             if radii_trace and path and len(path) >= 2:
                 max_t = max(0, len(radii_trace) - 1)
+                t_show = max(0, min(int(anim_step), max_t))
             else:
                 max_t = 60
-            if "hazard_t_scrub" in st.session_state:
-                t_show = int(st.session_state["hazard_t_scrub"])
-            else:
-                t_show = max_t
-            t_show = max(0, min(t_show, max_t))
-            if step_reveal is None and radii_trace and path and len(path) >= 2:
-                step_reveal = min(t_show + 1, len(path) - 1)
+                try:
+                    t_show = int(st.session_state.get("hazard_t_scrub", max_t))
+                except (TypeError, ValueError):
+                    t_show = max_t
+                t_show = max(0, min(t_show, max_t))
         else:
             t_show = 0
+            max_t = 60
 
         # Stable key (never include scrubber t). Overlays live on the map itself —
         # safer on Cloud than feature_group_to_add with large dynamic JS payloads.
@@ -2678,7 +3243,10 @@ def main():
         zoom = int(st.session_state.get("map_zoom", 16))
         m = build_base_map(G, center, zoom)
 
-        # Soft road disruptions (amber dashed) — drawn under route overlays.
+        # 1) Fault line through epicenter (under everything).
+        _draw_fault_line_on_map(m, float(epi[1]), float(epi[0]))
+
+        # 2) Soft road disruptions (amber dashed) — broken streets near epi.
         disruption_coords = disruption_edge_latlons(
             G, st.session_state.get("edge_disruptions")
         )
@@ -2694,14 +3262,13 @@ def main():
                 )
             ).add_to(m)
 
-        # Red hazard rings only when disaster is active in the feed (or manual epi).
+        # 3) Red hazard rings + epicenter pin.
         if disaster_on:
             r_epi = float(damage_radius(float(t_show)))
             if radii_trace and 0 <= t_show < len(radii_trace):
                 r_epi = float(radii_trace[t_show]["r_epi"])
             feed_r = st.session_state.get("feed_r_epi_km")
             if feed_r is not None and (not radii_trace):
-                # Pre-route: show catalog r_epi scaled gently with scrubber.
                 r_epi = float(feed_r) * (0.5 + 0.5 * (t_show / max(max_t, 1)))
 
             for frac, op in [(1.0, 0.10), (0.75, 0.16), (0.3, 0.28)]:
@@ -2717,6 +3284,18 @@ def main():
                 _no_click(ring).add_to(m)
 
             _no_click(
+                folium.CircleMarker(
+                    [epi[1], epi[0]],
+                    radius=8,
+                    color="#fff",
+                    weight=2,
+                    fill=True,
+                    fill_color=HAZARD_ROUTE_COLOR,
+                    fill_opacity=1.0,
+                    tooltip="Earthquake epicenter",
+                )
+            ).add_to(m)
+            _no_click(
                 folium.Marker(
                     [epi[1], epi[0]],
                     icon=folium.Icon(color="red", icon="warning-sign"),
@@ -2724,29 +3303,34 @@ def main():
                 )
             ).add_to(m)
 
+        # Suggested apartment (known Hybrid win corridor) — guide free-click.
+        _draw_suggested_apartment_on_map(m, G)
+
+        # Blue start (fixed location). When animating, the moving agent is drawn
+        # by _draw_hybrid_path_animation; still show start faintly if mid-route.
         if (
             location_set
             and start_draw is not None
             and start_draw in G.nodes
         ):
-            _no_click(
-                folium.Marker(
-                    [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-                    icon=folium.Icon(color="blue", icon="home"),
-                    tooltip="Your location",
-                )
-            ).add_to(m)
-            _no_click(
-                folium.CircleMarker(
-                    [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-                    radius=9,
-                    color="#00E5FF",
-                    weight=3,
-                    fill=True,
-                    fill_color="#0a0f1e",
-                    fill_opacity=0.9,
-                )
-            ).add_to(m)
+            s_lat = float(G.nodes[start_draw]["y"])
+            s_lon = float(G.nodes[start_draw]["x"])
+            if not path or len(path) < 2:
+                _draw_start_blue_dot(m, s_lat, s_lon, tooltip="Your location (start)")
+            else:
+                # Ghost start so the origin stays visible while the agent moves.
+                _no_click(
+                    folium.CircleMarker(
+                        [s_lat, s_lon],
+                        radius=6,
+                        color=START_DOT_COLOR,
+                        weight=2,
+                        fill=True,
+                        fill_color=START_DOT_COLOR,
+                        fill_opacity=0.35,
+                        tooltip="Start",
+                    )
+                ).add_to(m)
 
         # All candidate evacuate areas (recommended highlighted; selected = routing).
         recommended_draw = st.session_state.get("recommended_exit")
@@ -2763,20 +3347,20 @@ def main():
             recommended_node=recommended_draw if location_set else None,
         )
 
-        if dij_path and len(dij_path) >= 2:
-            coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
-            _no_click(
-                folium.PolyLine(
-                    coords_d,
-                    color=DIJKSTRA_ROUTE_COLOR,
-                    weight=3,
-                    opacity=0.75,
-                    dash_array="8 10",
-                )
-            ).add_to(m)
-
-        # Primary recommendation path + comparison overlays.
-        if hybrid_deferred:
+        # Optional Classical / Dijkstra overlays (Advanced checkbox).
+        if draw_cmp or hybrid_deferred:
+            if dij_path and len(dij_path) >= 2:
+                coords_d = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in dij_path]
+                _no_click(
+                    folium.PolyLine(
+                        coords_d,
+                        color=DIJKSTRA_ROUTE_COLOR,
+                        weight=3,
+                        opacity=0.7,
+                        dash_array="8 10",
+                        tooltip="Dijkstra",
+                    )
+                ).add_to(m)
             if classical_path and len(classical_path) >= 2:
                 coords_c = [
                     [G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path
@@ -2785,11 +3369,15 @@ def main():
                     folium.PolyLine(
                         coords_c,
                         color=CLASSICAL_ROUTE_COLOR,
-                        weight=6,
-                        opacity=0.95,
+                        weight=4 if hybrid_deferred else 3,
+                        opacity=0.9 if hybrid_deferred else 0.7,
+                        tooltip="Classical FiLM",
                     )
                 ).add_to(m)
-            faded = hybrid_path_raw or []
+
+        # Hybrid path animation (primary).
+        if hybrid_deferred:
+            faded = hybrid_path_raw or path or []
             if faded and len(faded) >= 2:
                 coords_h = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in faded]
                 _no_click(
@@ -2799,44 +3387,13 @@ def main():
                         weight=3,
                         opacity=0.35,
                         dash_array="4 10",
+                        tooltip="Hybrid (deferred)",
                     )
                 ).add_to(m)
-        else:
-            if classical_path and len(classical_path) >= 2:
-                coords_c = [
-                    [G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path
-                ]
-                _no_click(
-                    folium.PolyLine(
-                        coords_c,
-                        color=CLASSICAL_ROUTE_COLOR,
-                        weight=4,
-                        opacity=0.88,
-                    )
-                ).add_to(m)
-
-            if path and len(path) >= 2:
-                end_i = step_reveal if step_reveal is not None else len(path) - 1
-                partial = path[: end_i + 1]
-                coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial]
-                _no_click(
-                    folium.PolyLine(
-                        coords,
-                        color=HYBRID_ROUTE_COLOR,
-                        weight=6,
-                        opacity=0.95,
-                    )
-                ).add_to(m)
-                for n in (partial[0], partial[-1]) if len(partial) >= 2 else partial:
-                    _no_click(
-                        folium.CircleMarker(
-                            [G.nodes[n]["y"], G.nodes[n]["x"]],
-                            radius=5,
-                            color=HYBRID_ROUTE_COLOR,
-                            fill=True,
-                            fill_opacity=0.95,
-                        )
-                    ).add_to(m)
+        elif path and len(path) >= 2:
+            _draw_hybrid_path_animation(
+                m, G, path, step_trace, step=anim_step
+            )
 
         map_data = st_folium(
             m,
@@ -2857,6 +3414,24 @@ def main():
                     st.session_state["_last_click_key"] = click_key
                     st.session_state["_map_click"] = (lat_c, lon_c)
                     st.rerun()
+
+    # Auto-advance path animation after the map has painted this frame.
+    _play_path = st.session_state.get("path")
+    if (
+        st.session_state.get("path_anim_playing")
+        and _play_path
+        and len(_play_path) >= 2
+    ):
+        import time as _time
+
+        _max_play = len(_play_path) - 1
+        _cur_play = int(st.session_state.get("path_anim_step", 0))
+        if _cur_play >= _max_play:
+            st.session_state["path_anim_playing"] = False
+        else:
+            _time.sleep(0.40)
+            st.session_state["path_anim_step"] = _cur_play + 1
+            st.rerun()
 
 
 if __name__ == "__main__":
