@@ -23,12 +23,14 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import networkx as nx
 
 from src.dynamic_simulation import (
+    DISRUPTION_BROKEN_MULT,
     DISRUPTION_FLOOD_MULT,
     DISRUPTION_SOFT_BLOCK_MULT,
     DISRUPTION_SOFT_MULT,
     EdgeDisruptionSet,
     apply_edge_disruptions,
     sample_flood_corridor,
+    sample_near_epi_broken_roads,
     sample_random_disruptions,
 )
 
@@ -95,11 +97,14 @@ class TrafficProvider(ABC):
         corridor_extra: int = 3,
         seed: Optional[int] = None,
         multiplier: Optional[float] = None,
+        epicenter_lonlat: Optional[Tuple[float, float]] = None,
+        radius_km: Optional[float] = None,
     ) -> EdgeDisruptionSet:
         """
         Return edges + soft multipliers for the current map overlay.
 
-        ``kind``: ``congestion`` | ``soft_block`` | ``flood``
+        ``kind``: ``congestion`` | ``soft_block`` | ``flood`` | ``broken``
+        ``broken`` / ``near_epi`` need ``epicenter_lonlat`` (Escape primary).
         """
 
     def apply_to_graph(
@@ -136,7 +141,7 @@ class TrafficProvider(ABC):
 
     def badge_label(self) -> str:
         if self.mode == "live":
-            return "Live conditions · traffic API"
+            return "Live conditions · live feed"
         return "Live conditions · simulated feed"
 
 
@@ -173,8 +178,30 @@ class MockTrafficProvider(TrafficProvider):
         corridor_extra: int = 3,
         seed: Optional[int] = None,
         multiplier: Optional[float] = None,
+        epicenter_lonlat: Optional[Tuple[float, float]] = None,
+        radius_km: Optional[float] = None,
     ) -> EdgeDisruptionSet:
         kind_norm = str(kind or "congestion").strip().lower()
+        if kind_norm in ("broken", "near_epi", "quake_damage", "damaged"):
+            if epicenter_lonlat is None:
+                # Fallback: mild random soft-block if no epi (should not happen
+                # on Escape open — callers pass the fixed epicenter).
+                return sample_random_disruptions(
+                    G,
+                    n_seed_edges=int(n_seed_edges),
+                    corridor_extra=int(corridor_extra),
+                    multiplier=float(multiplier or DISRUPTION_BROKEN_MULT),
+                    soft_block=True,
+                    seed=seed,
+                )
+            return sample_near_epi_broken_roads(
+                G,
+                epicenter_lonlat,
+                corridor_extra=int(corridor_extra),
+                multiplier=float(multiplier or DISRUPTION_BROKEN_MULT),
+                radius_km=radius_km,
+                seed=seed,
+            )
         if kind_norm in ("flood", "flooded"):
             return sample_flood_corridor(
                 G,
@@ -241,6 +268,8 @@ class LiveTrafficProvider(TrafficProvider):
         corridor_extra: int = 3,
         seed: Optional[int] = None,
         multiplier: Optional[float] = None,
+        epicenter_lonlat: Optional[Tuple[float, float]] = None,
+        radius_km: Optional[float] = None,
     ) -> EdgeDisruptionSet:
         if not self.is_configured:
             raise TrafficNotConfiguredError(
@@ -250,7 +279,17 @@ class LiveTrafficProvider(TrafficProvider):
             )
         # TODO: TomTom / HERE incident + flow → edge multipliers.
         # Keep the graph usable: empty overlay until the paid client is wired.
-        _ = (G, kind, near_node, n_seed_edges, corridor_extra, seed, multiplier)
+        _ = (
+            G,
+            kind,
+            near_node,
+            n_seed_edges,
+            corridor_extra,
+            seed,
+            multiplier,
+            epicenter_lonlat,
+            radius_km,
+        )
         if not self._allow_empty:
             raise TrafficNotConfiguredError(
                 "Live traffic API client is not implemented yet "
@@ -334,7 +373,7 @@ def apply_provider_disruptions(
 
 
 def traffic_mode_badge(mode: Optional[str] = None) -> str:
-    """Short UI badge: simulated feed vs live traffic API."""
+    """Short UI badge: simulated feed vs live feed."""
     return get_traffic_provider(mode).badge_label()
 
 
