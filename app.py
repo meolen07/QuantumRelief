@@ -1318,7 +1318,7 @@ def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
 
 def _run_judge_demo(G) -> str:
     """
-    Quantathon secondary path: curated start+dest + pinned flood + auto-route.
+    Primary audience path: curated start+dest + pinned flood + auto-route.
 
     Locks evacuate exit (exit_auto=False) so ranking cannot steal the pin.
     Caption uses live-verified flood metrics from demo_scenarios.json.
@@ -1351,6 +1351,7 @@ def _run_judge_demo(G) -> str:
             # Re-assert curated start epi + destination after feed apply.
             if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
+                st.session_state["disaster_active"] = True
             dest = sc.get("dest_node")
             if dest is not None and dest in G.nodes:
                 _set_destination(G, dest, via="judge demo")
@@ -1452,7 +1453,7 @@ def _init_session(G, nodes, origin):
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
         st.session_state["map_status"] = (
-            "Set your location on the map · epicenter active · several evacuate areas ranked."
+            "Press Run demo — or wait for auto-run on first open."
         )
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
@@ -1512,13 +1513,12 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Earthquake Escape — several evacuate areas, safest &amp; fastest first</div>',
+        '<div class="qr-tagline">Earthquake Escape — Hybrid vs Classical in one click</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Manila apartment shakes → set your location → epicenter &amp; hazard t → '
-        "several evacuate areas ranked (we recommend the best) → compare Hybrid · Classical · Dijkstra "
-        "on the selected exit. Simulated post-quake feed today — same app with a live provider in production."
+        '<div class="qr-tag">Apartment shakes in Manila → <b>Run demo</b> → cyan Hybrid beats gold Classical '
+        "on the map. Optional: click map to move. Advanced controls stay collapsed."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1538,11 +1538,12 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, nodes, origin)
 
-    # Product open: Earthquake Escape scenario + ranked evacuate areas (not judge spam).
-    if not st.session_state.get("_feed_autoload_done"):
-        st.session_state["_feed_autoload_done"] = True
-        _load_escape_open(G)
-    elif st.session_state.pop("_schedule_auto_run", False):
+    # First open: arm pinned judge scenario (qa_1 Hybrid win) + auto-run route.
+    if not st.session_state.get("_demo_autoload_done"):
+        st.session_state["_demo_autoload_done"] = True
+        st.session_state["_feed_autoload_done"] = True  # skip legacy quake_core open
+        _run_judge_demo(G)
+    if st.session_state.pop("_schedule_auto_run", False):
         st.session_state["_auto_run_route"] = True
 
     if "_map_click" in st.session_state:
@@ -1563,7 +1564,7 @@ def main():
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
     # ------------------------------------------------------------------
-    # RIGHT PANEL (~1/3) — product sections
+    # RIGHT PANEL (~1/3) — 3-step audience flow
     # ------------------------------------------------------------------
     with panel_col:
         badge = (
@@ -1574,65 +1575,157 @@ def main():
         st.markdown(
             f'<div class="qr-panel"><h3>Earthquake Escape</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
-            "B2G2C flagship — feel the quake, choose among several evacuate areas. "
-            "<b style='color:#E8EEF6'>location → epicenter → ranked exits → escape route</b>."
+            "Three steps: location → <b style='color:#E8EEF6'>Run demo</b> → read the map."
             "</p>"
             '<div class="qr-legend">'
-            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid</span>'
-            f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Classical</span>'
-            f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>Dijkstra</span>'
-            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Post-quake damage</span>'
-            f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Hazard rings</span>'
-            f'<span><i style="background:#F5C542"></i>Evacuate areas</span>'
+            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Cyan = Hybrid</span>'
+            f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Gold = Classical</span>'
+            f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>White = Dijkstra</span>'
+            f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Red = hazard</span>'
+            f'<span><i style="background:#F5C542"></i>Gold pin = exit</span>'
             "</div></div>",
             unsafe_allow_html=True,
         )
+        if not pl_ok:
+            st.warning(
+                "PennyLane unavailable — Hybrid card mirrors Classical "
+                "(install pennylane, reboot for the win)."
+            )
+            st.caption(qstat["note"])
 
-        # ---- Conditions now (post-quake city feed) ----
+        exit_label = _landmark_label_for(G, st.session_state["dest_node"])
+        area_rows = _evacuate_area_rows(G)
+        recommended_node = st.session_state.get("recommended_exit")
+        if recommended_node is None and area_rows:
+            for r in area_rows:
+                if r.get("recommended"):
+                    recommended_node = r.get("exit_node")
+                    break
+            if recommended_node is None:
+                recommended_node = area_rows[0].get("exit_node")
+        _jd = (_load_demo_scenarios() or {}).get("judge_demo") or {}
+        _jd_h = _jd.get("live_hybrid_time")
+        _jd_c = _jd.get("live_classical_time")
+        _jd_sid = _jd.get("scenario_id", "qa_1")
+        if _jd_h is not None and _jd_c is not None:
+            _jd_cap = (
+                f"Pinned {_jd_sid} · live H={float(_jd_h):.1f} < C={float(_jd_c):.1f}"
+            )
+        else:
+            _jd_cap = f"Pinned {_jd_sid} · Hybrid travel win under flood"
+
+        # ---- Step 1: Location ----
         st.markdown(
-            '<div class="qr-panel"><h3>Conditions now</h3></div>',
+            '<div class="qr-step-label">Step 1 · Location</div>',
             unsafe_allow_html=True,
         )
-        st.markdown(_feed_incidents_html(), unsafe_allow_html=True)
-        st.caption(_disruption_summary())
-        c_a, c_b = st.columns(2)
-        with c_a:
-            if st.button(
-                "Refresh feed",
-                use_container_width=True,
-                type="secondary",
-                key="btn_refresh_feed",
-                help="Rotate simulated post-quake / hazard scenarios",
-            ):
-                _load_current_conditions(G, refresh=True)
-                if st.session_state.get("exit_auto", True):
-                    try:
-                        _recommend_and_set_exit(G, via="feed refresh")
-                    except Exception:
-                        pass
-                st.rerun()
-        with c_b:
-            if st.button(
-                "Clear overlay",
-                use_container_width=True,
-                type="secondary",
-                key="btn_clear_disruption",
-                disabled=_active_disruption_count() == 0 and not _disaster_active(),
-            ):
-                _clear_disruption()
-                mild_lat, mild_lon = _mild_default_epi(G)
-                _set_epicenter(mild_lat, mild_lon)
-                st.session_state["disaster_active"] = True
-                st.session_state["map_status"] = (
-                    "Post-quake overlays cleared · epicenter held"
-                )
-                st.rerun()
+        st.markdown(
+            f'<div class="qr-oneliner">Blue home · '
+            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
+            f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+            f"Click map to move (optional — Run demo sets the pin)</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="qr-oneliner">Recommended exit · '
+            f"<span>{exit_label}</span>"
+            f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+            f"Gold / cyan markers on map · override in Advanced</span></div>",
+            unsafe_allow_html=True,
+        )
 
-        with st.expander("Post-quake road damage (secondary)", expanded=False):
-            st.caption(
-                "Amber dashed = damaged / blocked corridors after the quake "
-                f"(not a daily-commute product) · feed: {traffic_mode_badge()}."
+        # ---- Step 2: One CTA ----
+        st.markdown(
+            '<div class="qr-step-label">Step 2 · Run demo</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(_jd_cap)
+        if st.button(
+            "Run demo",
+            type="primary",
+            use_container_width=True,
+            key="btn_run_demo",
+            help="Pinned judge scenario (qa_1) end-to-end — Hybrid vs Classical vs Dijkstra",
+        ):
+            _run_judge_demo(G)
+            st.rerun()
+
+        # Current-map route (secondary CTA kept for Advanced users / auto-run target)
+        run = False
+        if st.session_state.pop("_auto_run_route", False):
+            run = True
+        st.caption(st.session_state.get("map_status", ""))
+
+        # Hazard scrub: clamp BEFORE widget; never write after (Streamlit owns key).
+        _path_for_scrub = st.session_state.get("path")
+        _radii_for_scrub = st.session_state.get("radii_trace")
+        if (
+            _radii_for_scrub
+            and _path_for_scrub
+            and len(_path_for_scrub) >= 2
+        ):
+            _scrub_max_t = max(0, len(_radii_for_scrub) - 1)
+        else:
+            _scrub_max_t = 60
+        if "hazard_t_scrub" not in st.session_state:
+            st.session_state["hazard_t_scrub"] = min(30, _scrub_max_t)
+        else:
+            try:
+                _prev_scrub = int(st.session_state["hazard_t_scrub"])
+            except (TypeError, ValueError):
+                _prev_scrub = _scrub_max_t
+            if _prev_scrub > _scrub_max_t:
+                st.session_state["hazard_t_scrub"] = _scrub_max_t
+            elif _prev_scrub < 0:
+                st.session_state["hazard_t_scrub"] = 0
+        if _disaster_active():
+            st.slider(
+                "Hazard time t",
+                0,
+                _scrub_max_t,
+                key="hazard_t_scrub",
+                help="Epicenter damage radius grows with t — scrub after routes draw",
             )
+
+        # ---- Advanced (collapsed) ----
+        with st.expander("Advanced", expanded=False):
+            st.caption(
+                "Feed, congestion, exit override, place mode — not needed for the 60s story."
+            )
+            st.markdown(_feed_incidents_html(), unsafe_allow_html=True)
+            st.caption(_disruption_summary())
+            c_a, c_b = st.columns(2)
+            with c_a:
+                if st.button(
+                    "Refresh feed",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_refresh_feed",
+                ):
+                    _load_current_conditions(G, refresh=True)
+                    if st.session_state.get("exit_auto", True):
+                        try:
+                            _recommend_and_set_exit(G, via="feed refresh")
+                        except Exception:
+                            pass
+                    st.rerun()
+            with c_b:
+                if st.button(
+                    "Clear overlay",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_clear_disruption",
+                    disabled=_active_disruption_count() == 0 and not _disaster_active(),
+                ):
+                    _clear_disruption()
+                    mild_lat, mild_lon = _mild_default_epi(G)
+                    _set_epicenter(mild_lat, mild_lon)
+                    st.session_state["disaster_active"] = True
+                    st.session_state["map_status"] = (
+                        "Post-quake overlays cleared · epicenter held"
+                    )
+                    st.rerun()
+
             dcol_a, dcol_b = st.columns(2)
             with dcol_a:
                 if st.button(
@@ -1685,275 +1778,103 @@ def main():
                     _handle_traffic_error(exc)
                 st.rerun()
 
-        # ---- Your escape ----
-        st.markdown(
-            '<div class="qr-panel"><h3>Your escape</h3></div>',
-            unsafe_allow_html=True,
-        )
-        place_mode = st.radio(
-            "Map click sets",
-            options=[PLACE_START, PLACE_DEST],
-            horizontal=True,
-            key="place_mode",
-            help=(
-                "Location = your apartment / start. "
-                "Evacuate exit = optional map override among candidate areas."
-            ),
-        )
-        dest_lat = float(
-            st.session_state.get(
-                "dest_lat", G.nodes[st.session_state["dest_node"]]["y"]
+            st.radio(
+                "Map click sets",
+                options=[PLACE_START, PLACE_DEST],
+                horizontal=True,
+                key="place_mode",
+                help="Location = apartment/start. Evacuate exit = map override.",
             )
-        )
-        dest_lon = float(
-            st.session_state.get(
-                "dest_lon", G.nodes[st.session_state["dest_node"]]["x"]
-            )
-        )
-        exit_auto = bool(st.session_state.get("exit_auto", True))
-        exit_label = _landmark_label_for(G, st.session_state["dest_node"])
-        st.markdown(
-            f'<div class="qr-ro"><strong>Your location</strong> · blue home<br/>'
-            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-            f'<br/><span style="font-size:0.75rem">'
-            f'Place mode: <b style="color:#00E5FF">{place_mode}</b> — click the map'
-            f"</span></div>",
-            unsafe_allow_html=True,
-        )
+            epi_a, epi_b = st.columns(2)
+            with epi_a:
+                if st.button(
+                    "Random epicenter",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_random_epi",
+                ):
+                    _activate_random_epicenter(G)
+                    st.rerun()
+            with epi_b:
+                if st.button(
+                    "Recommend best exit",
+                    use_container_width=True,
+                    type="secondary",
+                    key="btn_recommend_exit",
+                ):
+                    try:
+                        msg = _recommend_and_set_exit(G, via="recommend button")
+                        st.session_state["map_status"] = msg
+                    except Exception as exc:
+                        st.session_state["map_status"] = f"Exit recommend failed: {exc}"
+                    st.rerun()
 
-        # --- Several evacuate areas (ranked) — recommend best, show all ---
-        area_rows = _evacuate_area_rows(G)
-        recommended_node = st.session_state.get("recommended_exit")
-        if recommended_node is None and area_rows:
-            for r in area_rows:
-                if r.get("recommended"):
-                    recommended_node = r.get("exit_node")
-                    break
-            if recommended_node is None:
-                recommended_node = area_rows[0].get("exit_node")
-        dest_node = st.session_state.get("dest_node")
+            if area_rows:
+                options = []
+                node_by_label = {}
+                for row in area_rows:
+                    node = row.get("exit_node")
+                    if node is None or node not in G.nodes:
+                        continue
+                    lab = str(row.get("label") or _landmark_label_for(G, node))
+                    rank = row.get("rank", "—")
+                    score = row.get("combined_score")
+                    tag = (
+                        " ★ best"
+                        if (node == recommended_node or row.get("recommended"))
+                        else ""
+                    )
+                    if score is not None:
+                        label = f"#{rank} {lab} · score {score}{tag}"
+                    else:
+                        label = f"#{rank} {lab}{tag}"
+                    options.append(label)
+                    node_by_label[label] = node
+                if options:
+                    current = st.session_state.get("dest_node")
+                    default_ix = 0
+                    for i, lab in enumerate(options):
+                        if node_by_label.get(lab) == current:
+                            default_ix = i
+                            break
+                    choice = st.selectbox(
+                        "Override evacuate area",
+                        options=options,
+                        index=default_ix,
+                        key="exit_override_select",
+                    )
+                    ov_a, ov_b = st.columns(2)
+                    with ov_a:
+                        if st.button(
+                            "Route to selected",
+                            use_container_width=True,
+                            type="secondary",
+                            key="btn_use_exit",
+                        ):
+                            node = node_by_label.get(choice)
+                            if node is not None:
+                                is_best = node == recommended_node
+                                _select_evacuate_area(
+                                    G, node, via="exit override", auto=is_best
+                                )
+                                st.rerun()
+                    with ov_b:
+                        if st.button(
+                            "Use recommended",
+                            use_container_width=True,
+                            type="secondary",
+                            key="btn_use_recommended",
+                            disabled=recommended_node is None,
+                        ):
+                            if recommended_node is not None:
+                                _select_evacuate_area(
+                                    G,
+                                    recommended_node,
+                                    via="use recommended",
+                                    auto=True,
+                                )
+                                st.rerun()
 
-        list_html = [
-            '<div class="qr-exit-list">',
-            '<div class="qr-exit-lead">'
-            "<strong style='color:#E8EEF6'>Several evacuate areas</strong> — "
-            "we recommend the safest &amp; fastest"
-            "</div>",
-        ]
-        for row in area_rows:
-            node = row.get("exit_node")
-            is_dest = node == dest_node
-            is_rec = node == recommended_node or bool(row.get("recommended"))
-            classes = "qr-exit-row"
-            if is_rec:
-                classes += " recommended"
-            if is_dest:
-                classes += " selected"
-            rank = row.get("rank") or "—"
-            lab = str(row.get("label") or _landmark_label_for(G, node))
-            pills = ""
-            if is_rec:
-                pills += '<span class="qr-exit-pill">Best</span>'
-            if is_dest:
-                pills += '<span class="qr-exit-pill routing">Routing</span>'
-            score = row.get("combined_score")
-            t_sc = row.get("time_score")
-            s_sc = row.get("safety_score")
-            travel = row.get("travel_time")
-            safety_km = row.get("safety_km")
-            if score is not None:
-                travel_ok = (
-                    travel is not None
-                    and travel == travel
-                    and travel != float("inf")
-                )
-                travel_bit = f"~{travel:.1f} travel" if travel_ok else "unreachable"
-                safety_bit = (
-                    f"{safety_km:.2f} km from epi"
-                    if safety_km is not None
-                    else ""
-                )
-                scores = (
-                    f"Score <b style='color:#E8EEF6'>{score}</b> · "
-                    f"travel {t_sc if t_sc is not None else '—'} · "
-                    f"safety {s_sc if s_sc is not None else '—'} · "
-                    f"{travel_bit}"
-                    + (f" · {safety_bit}" if safety_bit else "")
-                )
-            else:
-                scores = str(row.get("why") or "Awaiting rank")
-            list_html.append(
-                f'<div class="{classes}">'
-                f'<span class="qr-exit-rank">{rank}</span>'
-                f'<div class="qr-exit-meta">'
-                f'<div class="name">{lab}{pills}</div>'
-                f'<div class="scores">{scores}</div>'
-                f"</div></div>"
-            )
-        list_html.append("</div>")
-        st.markdown("".join(list_html), unsafe_allow_html=True)
-
-        best_bit = (
-            " · <b style='color:#F5C542'>Best recommended</b>"
-            if exit_auto
-            else " · <b style='color:#00E5FF'>manual override</b>"
-        )
-        st.markdown(
-            f'<div class="qr-ro"><strong>Routing to</strong> · selected evacuate area{best_bit}<br/>'
-            f"<b style='color:#E8EEF6'>{exit_label}</b><br/>"
-            f"{dest_lat:.5f}, {dest_lon:.5f}"
-            f'<br/><span style="font-size:0.75rem">'
-            f'node {st.session_state["dest_node"]} · gold = recommended · cyan = routing target'
-            f"</span></div>",
-            unsafe_allow_html=True,
-        )
-
-        # Epicenter + hazard t are primary Escape controls (not optional).
-        st.markdown(
-            f'<div class="qr-ro"><strong style="color:#FF4D6A">Epicenter</strong>'
-            f'<br/>{st.session_state["epi_lat"]:.5f}, '
-            f'{st.session_state["epi_lon"]:.5f}'
-            f'<br/><span style="font-size:0.75rem">'
-            + (
-                "Red hazard rings on map · soft Algorithm-1 penalties on escape routes"
-                if _disaster_active()
-                else "Activate epicenter to expand hazard rings"
-            )
-            + "</span></div>",
-            unsafe_allow_html=True,
-        )
-        epi_a, epi_b = st.columns(2)
-        with epi_a:
-            if st.button(
-                "Random epicenter",
-                use_container_width=True,
-                type="secondary",
-                key="btn_random_epi",
-                help="Place a random earthquake epicenter — rings rewrite edge costs",
-            ):
-                _activate_random_epicenter(G)
-                st.rerun()
-        with epi_b:
-            if st.button(
-                "Recommend best exit",
-                use_container_width=True,
-                type="secondary",
-                key="btn_recommend_exit",
-                help="Re-rank evacuate areas for safest + fastest under current hazard",
-            ):
-                try:
-                    msg = _recommend_and_set_exit(G, via="recommend button")
-                    st.session_state["map_status"] = msg
-                except Exception as exc:
-                    st.session_state["map_status"] = f"Exit recommend failed: {exc}"
-                st.rerun()
-
-        # Single hazard scrubber: clamp session_state BEFORE the widget.
-        # Never assign hazard_t_scrub after this slider (Streamlit owns the key).
-        # max_t uses radii_trace when a prior route exists; else 0..60.
-        _path_for_scrub = st.session_state.get("path")
-        _radii_for_scrub = st.session_state.get("radii_trace")
-        if (
-            _radii_for_scrub
-            and _path_for_scrub
-            and len(_path_for_scrub) >= 2
-        ):
-            _scrub_max_t = max(0, len(_radii_for_scrub) - 1)
-        else:
-            _scrub_max_t = 60
-        if "hazard_t_scrub" not in st.session_state:
-            st.session_state["hazard_t_scrub"] = min(30, _scrub_max_t)
-        else:
-            try:
-                _prev_scrub = int(st.session_state["hazard_t_scrub"])
-            except (TypeError, ValueError):
-                _prev_scrub = _scrub_max_t
-            if _prev_scrub > _scrub_max_t:
-                st.session_state["hazard_t_scrub"] = _scrub_max_t
-            elif _prev_scrub < 0:
-                st.session_state["hazard_t_scrub"] = 0
-        if _disaster_active():
-            st.slider(
-                "Hazard time t",
-                0,
-                _scrub_max_t,
-                key="hazard_t_scrub",
-                help="Primary Escape control — epicenter damage radius grows with t",
-            )
-
-        # Override among ranked evacuate areas (always visible).
-        if area_rows:
-            options = []
-            node_by_label = {}
-            for row in area_rows:
-                node = row.get("exit_node")
-                if node is None or node not in G.nodes:
-                    continue
-                lab = str(row.get("label") or _landmark_label_for(G, node))
-                rank = row.get("rank", "—")
-                score = row.get("combined_score")
-                tag = (
-                    " ★ best"
-                    if (node == recommended_node or row.get("recommended"))
-                    else ""
-                )
-                if score is not None:
-                    label = f"#{rank} {lab} · score {score}{tag}"
-                else:
-                    label = f"#{rank} {lab}{tag}"
-                options.append(label)
-                node_by_label[label] = node
-            if options:
-                current = st.session_state.get("dest_node")
-                default_ix = 0
-                for i, lab in enumerate(options):
-                    if node_by_label.get(lab) == current:
-                        default_ix = i
-                        break
-                choice = st.selectbox(
-                    "Override evacuate area",
-                    options=options,
-                    index=default_ix,
-                    key="exit_override_select",
-                    help="Pick any ranked area — engines compare for the selected exit only",
-                )
-                ov_a, ov_b = st.columns(2)
-                with ov_a:
-                    if st.button(
-                        "Route to selected",
-                        use_container_width=True,
-                        type="secondary",
-                        key="btn_use_exit",
-                    ):
-                        node = node_by_label.get(choice)
-                        if node is not None:
-                            is_best = node == recommended_node
-                            _select_evacuate_area(
-                                G, node, via="exit override", auto=is_best
-                            )
-                            st.rerun()
-                with ov_b:
-                    if st.button(
-                        "Use recommended",
-                        use_container_width=True,
-                        type="secondary",
-                        key="btn_use_recommended",
-                        disabled=recommended_node is None,
-                    ):
-                        if recommended_node is not None:
-                            _select_evacuate_area(
-                                G,
-                                recommended_node,
-                                via="use recommended",
-                                auto=True,
-                            )
-                            st.rerun()
-
-        with st.expander("Arbitrary destination (secondary)", expanded=False):
-            st.caption(
-                "Not the primary Escape story — any graph node as destination "
-                "(A→B). Prefer ranked evacuate areas above."
-            )
             if st.button(
                 "Enable any-node destination clicks",
                 use_container_width=True,
@@ -1968,52 +1889,19 @@ def main():
                 )
                 st.rerun()
 
-        with st.expander("Quantathon · Run judge demo", expanded=False):
-            _jd = (_load_demo_scenarios() or {}).get("judge_demo") or {}
-            _jd_h = _jd.get("live_hybrid_time")
-            _jd_c = _jd.get("live_classical_time")
-            _jd_cap = (
-                f"Pinned {_jd.get('scenario_id', 'qa_1')} · live-verified "
-                f"H={float(_jd_h):.1f} < C={float(_jd_c):.1f} under flood "
-                f"seed {_jd.get('flood_seed', '—')}."
-                if _jd_h is not None and _jd_c is not None
-                else (
-                    "Secondary path: curated start + evacuate dest + pinned flood "
-                    "+ auto Find safest & fastest escape route."
-                )
-            )
-            st.caption(_jd_cap)
-            if not pl_ok:
-                st.warning(
-                    "PennyLane unavailable — judge demo cannot show a Hybrid win "
-                    "(Hybrid card mirrors Classical). Install pennylane, reboot."
-                )
             if st.button(
-                "Run judge demo",
-                type="secondary",
+                "Find escape route (current map)",
                 use_container_width=True,
-                key="btn_judge_demo",
+                type="secondary",
+                key="btn_find_route",
             ):
-                _run_judge_demo(G)
-                st.rerun()
+                run = True
 
-        if not pl_ok:
-            st.caption(qstat["note"])
-
-        # ---- Escape route ----
+        # ---- Step 3 header (metrics follow after route compute) ----
         st.markdown(
-            '<div class="qr-panel"><h3>Escape route</h3></div>',
+            '<div class="qr-step-label">Step 3 · Map + metrics</div>',
             unsafe_allow_html=True,
         )
-        run = st.button(
-            "Find safest & fastest escape route",
-            type="primary",
-            use_container_width=True,
-            key="btn_find_route",
-        )
-        if st.session_state.pop("_auto_run_route", False):
-            run = True
-        st.caption(st.session_state.get("map_status", ""))
 
         start = st.session_state["start_node"]
         dest = st.session_state["dest_node"]
@@ -2371,7 +2259,7 @@ def main():
                 if narrative.get("hybrid_near_dijkstra") is not None:
                     near_dij = bool(narrative["hybrid_near_dijkstra"])
 
-            st.markdown('<div class="qr-panel"><h3>Metrics</h3></div>', unsafe_allow_html=True)
+            st.markdown('<div class="qr-panel"><h3>Hybrid vs Classical</h3></div>', unsafe_allow_html=True)
 
             if hybrid_deferred and deferred_note:
                 st.warning(deferred_note)
@@ -2565,10 +2453,8 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
         else:
             st.info(
-                "① Set **Your location** (map click = apartment/start) · "
-                "② Epicenter + **Hazard time t** · "
-                "③ **Several evacuate areas** ranked — we recommend the best (or override) · "
-                "④ **Find safest & fastest escape route** for the selected exit."
+                "Press **Run demo** — pinned qa_1 loads location, exit, flood, and "
+                "compares Hybrid · Classical · Dijkstra. Or wait — first open auto-runs."
             )
 
         st.markdown(
@@ -2596,10 +2482,10 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         place_mode = st.session_state.get("place_mode", PLACE_START)
         n_exits = len(st.session_state.get("exit_nodes") or [])
         st.caption(
-            f"Map click → **{place_mode}** · blue = your location · "
-            f"gold = recommended evacuate area · cyan = routing target · "
-            f"{n_exits or N_EVACUATE_AREAS} candidate exits on map"
-            + (" · red rings = earthquake hazard" if disaster_on else "")
+            f"Cyan Hybrid · gold Classical · white Dijkstra · "
+            f"gold pins = exits ({n_exits or N_EVACUATE_AREAS}) · "
+            f"click → {place_mode}"
+            + (" · red rings = hazard" if disaster_on else "")
             + (" · faded cyan = deferred Hybrid" if hybrid_deferred else "")
         )
 
