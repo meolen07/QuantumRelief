@@ -2,7 +2,7 @@
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
 Audience flow (only):
-  1) Map opens with fixed epicenter, 5 evacuate exits, amber flood damages
+  1) Map opens with fixed epicenter, 5 evacuate exits, amber broken roads near epi
   2) Click map → set your location (start)
   3) App auto-recommends the best-ranked evacuate exit
   4) Find escape route → Hybrid vs Classical vs Dijkstra metrics
@@ -586,7 +586,11 @@ def _apply_advantage_scenario(G, scenario: Dict[str, Any]) -> str:
     m = scenario.get("metrics") or {}
     expected = ""
     if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
-        tag = "live flood" if m.get("verified_with_flood") else "stored"
+        tag = (
+            "live broken"
+            if m.get("verified_with_broken")
+            else ("live flood" if m.get("verified_with_flood") else "stored")
+        )
         expected = (
             f" {tag} H={float(m['hybrid_time']):.1f} "
             f"< C={float(m['classical_time']):.1f}."
@@ -1177,7 +1181,9 @@ def _disruption_summary() -> str:
     n = len(raw["edges"])
     mult = float(raw.get("multiplier", 5.0))
     kind = str(raw.get("kind", "congestion"))
-    if kind == "flood":
+    if kind == "broken":
+        label = "Broken roads near epicenter"
+    elif kind == "flood":
         label = "Flooded corridor (related case)"
     elif kind == "soft_block":
         label = "Post-quake blocked corridor"
@@ -1237,6 +1243,62 @@ def _set_random_disruption(G, *, soft_block: bool = False) -> int:
     return len(dset.normalized_edges())
 
 
+def _set_broken_roads_near_epi(
+    G,
+    *,
+    epicenter_lonlat: Optional[Tuple[float, float]] = None,
+    seed: Optional[int] = None,
+    corridor_extra: int = 14,
+    radius_km: Optional[float] = None,
+) -> int:
+    """Post-quake broken roads clustered near the epicenter (Escape primary)."""
+    import time as _time
+
+    if seed is None:
+        seed = int(_time.time() * 1000) % (2**31 - 1)
+    epi = epicenter_lonlat
+    if epi is None:
+        elat = st.session_state.get("epi_lat")
+        elon = st.session_state.get("epi_lon")
+        if elat is not None and elon is not None:
+            epi = (float(elon), float(elat))
+    provider = get_traffic_provider()
+    dset = provider.get_edge_disruptions(
+        G,
+        kind="broken",
+        corridor_extra=int(corridor_extra),
+        seed=int(seed),
+        epicenter_lonlat=epi,
+        radius_km=radius_km,
+    )
+    st.session_state["edge_disruptions"] = dset.to_serializable()
+    st.session_state["feed_snapshot"] = {
+        "city": "Manila · Intramuros",
+        "as_of": "manual overlay",
+        "scenario_id": "manual_broken",
+        "scenario_name": "Broken roads near epicenter",
+        "blurb": "Post-quake broken roads hugging the hazard rings",
+        "feed": "simulated",
+        "has_disaster": True,
+        "incidents": [
+            {
+                "id": "manual_broken:0",
+                "kind": "broken",
+                "label": "Broken roads near epicenter",
+                "severity": 0.9,
+                "area_hint": "Near hazard rings",
+                "edge_count": len(dset.normalized_edges()),
+                "edges": [[u, v] for u, v in dset.normalized_edges()],
+                "multiplier": float(dset.multiplier),
+            }
+        ],
+    }
+    st.session_state["disaster_active"] = True
+    st.session_state.pop("_nudge_disruption", None)
+    _clear_route_results()
+    return len(dset.normalized_edges())
+
+
 def _set_flood_corridor(
     G,
     *,
@@ -1244,7 +1306,7 @@ def _set_flood_corridor(
     seed: Optional[int] = None,
     corridor_extra: int = 11,
 ) -> int:
-    """Ondoy-like soft flood corridor via traffic provider; clear prior routes."""
+    """Ondoy-like soft flood corridor via traffic provider (related case)."""
     import time as _time
 
     if seed is None:
@@ -1262,8 +1324,8 @@ def _set_flood_corridor(
         "city": "Manila · Intramuros",
         "as_of": "manual overlay",
         "scenario_id": "manual_flood",
-        "scenario_name": "Flooded corridor",
-        "blurb": "Manual flood overlay",
+        "scenario_name": "Flooded corridor (related case)",
+        "blurb": "Manual flood overlay · Ondoy-like related case",
         "feed": "simulated",
         "has_disaster": False,
         "incidents": [
@@ -1311,16 +1373,17 @@ def _handle_traffic_error(exc: Exception) -> None:
         pass
 
 
-# Pinned flood seeds that keep Hybrid travel < Classical on best-ranked exits
+# Pinned damage seeds that keep Hybrid travel < Classical on best-ranked exits
 # (verified against film_hybrid.pt / film_classical.pt + demo_scenarios.json).
 # Fallback only — live pin lives in data/demo_scenarios.json (SSoT).
-_JUDGE_FLOOD_BY_SCENARIO = {
+_JUDGE_DAMAGE_BY_SCENARIO = {
     "qa_1": {"seed": 17082, "corridor_extra": 14},
     "qa_2": {"seed": 16351, "corridor_extra": 11},
     "qa_3": {"seed": 17092, "corridor_extra": 11},
     "qa_4": {"seed": 18245, "corridor_extra": 14},
     "qa_5": {"seed": 16280, "corridor_extra": 8},
 }
+_JUDGE_FLOOD_BY_SCENARIO = _JUDGE_DAMAGE_BY_SCENARIO  # back-compat alias
 
 
 def _hybrid_ckpt_debug() -> Dict[str, Any]:
@@ -1344,30 +1407,44 @@ def _hybrid_ckpt_debug() -> Dict[str, Any]:
     return out
 
 
-def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
-    """Flood seed / size for judge demo — prefer scenario pin, then table."""
+def _judge_damage_params(scenario: Dict[str, Any]) -> Dict[str, int]:
+    """Broken-road seed / size for Escape pin — prefer scenario pin, then table."""
     sid = str(scenario.get("id") or "")
-    if scenario.get("flood_seed") is not None:
+
+    def _seed_from(obj: Dict[str, Any]) -> Optional[int]:
+        for key in ("broken_seed", "damage_seed", "flood_seed"):
+            if obj.get(key) is not None:
+                return int(obj[key])
+        return None
+
+    seed = _seed_from(scenario)
+    if seed is not None:
         return {
-            "seed": int(scenario["flood_seed"]),
+            "seed": seed,
             "corridor_extra": int(
                 scenario.get("corridor_extra")
                 or (scenario.get("metrics") or {}).get("corridor_extra")
-                or 11
+                or 14
             ),
         }
     m = scenario.get("metrics") or {}
-    if m.get("flood_seed") is not None:
+    seed = _seed_from(m)
+    if seed is not None:
         return {
-            "seed": int(m["flood_seed"]),
-            "corridor_extra": int(m.get("corridor_extra") or 11),
+            "seed": seed,
+            "corridor_extra": int(m.get("corridor_extra") or 14),
         }
-    if sid in _JUDGE_FLOOD_BY_SCENARIO:
-        return dict(_JUDGE_FLOOD_BY_SCENARIO[sid])
+    if sid in _JUDGE_DAMAGE_BY_SCENARIO:
+        return dict(_JUDGE_DAMAGE_BY_SCENARIO[sid])
     return {
         "seed": 17_000 + (sum(ord(c) for c in sid or "judge") % 10_000),
-        "corridor_extra": 11,
+        "corridor_extra": 14,
     }
+
+
+def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
+    """Back-compat alias — Escape pin now uses near-epi broken roads."""
+    return _judge_damage_params(scenario)
 
 
 def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
@@ -1388,10 +1465,11 @@ def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
     scenarios = list(payload.get("scenarios") or [])
     for s in scenarios:
         if str(s.get("id")) == sid:
-            # Overlay judge_demo flood pin when present.
+            # Overlay judge_demo damage pin when present.
             out = dict(s)
-            if jd.get("flood_seed") is not None:
-                out["flood_seed"] = int(jd["flood_seed"])
+            for key in ("broken_seed", "damage_seed", "flood_seed"):
+                if jd.get(key) is not None:
+                    out[key] = int(jd[key])
             if jd.get("corridor_extra") is not None:
                 out["corridor_extra"] = int(jd["corridor_extra"])
             out["_payload_q_pct"] = payload.get("quantum_contribution_pct")
@@ -1402,8 +1480,8 @@ def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
 
 def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
     """
-    Hard-lock start, epi, flood from the pinned scenario, then route to the
-    live recommend_best_exit under those dynamics.
+    Hard-lock start, epi, near-epi broken roads from the pinned scenario, then
+    route to the live recommend_best_exit under those dynamics.
 
     Kept for smoke / offline checks — audience path uses `_load_fixed_scenario`.
     """
@@ -1433,11 +1511,13 @@ def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
         _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
         st.session_state["disaster_active"] = True
 
-    flood_params = _judge_flood_params(scenario)
-    near = st.session_state.get("start_node")
-    n = _set_flood_corridor(
+    flood_params = _judge_damage_params(scenario)
+    epi_ll = None
+    if scenario.get("epi_lat") is not None and scenario.get("epi_lon") is not None:
+        epi_ll = (float(scenario["epi_lon"]), float(scenario["epi_lat"]))
+    n = _set_broken_roads_near_epi(
         G,
-        near_node=near,
+        epicenter_lonlat=epi_ll,
         seed=flood_params["seed"],
         corridor_extra=flood_params["corridor_extra"],
     )
@@ -1477,7 +1557,7 @@ def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
 
 def _load_fixed_scenario(G) -> str:
     """
-    Audience open: fixed epicenter + pinned flood damages + 5 exits.
+    Audience open: fixed epicenter + near-epi broken roads + 5 exits.
 
     Does NOT set start, does NOT auto-run Hybrid/Classical compare.
     User clicks the map, then presses Find escape route.
@@ -1506,45 +1586,50 @@ def _load_fixed_scenario(G) -> str:
             if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
                 st.session_state["disaster_active"] = True
-            flood_params = _judge_flood_params(sc)
-            near = sc.get("start_node")
-            if near is not None and near not in G.nodes:
-                near = None
-            n = _set_flood_corridor(
+            damage_params = _judge_damage_params(sc)
+            epi_ll = None
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+                epi_ll = (float(sc["epi_lon"]), float(sc["epi_lat"]))
+            n = _set_broken_roads_near_epi(
                 G,
-                near_node=near,
-                seed=flood_params["seed"],
-                corridor_extra=flood_params["corridor_extra"],
+                epicenter_lonlat=epi_ll,
+                seed=damage_params["seed"],
+                corridor_extra=damage_params["corridor_extra"],
             )
-            # Re-assert epi after flood apply (feed/clear must not steal pin).
+            # Re-assert epi after damage apply (feed/clear must not steal pin).
             if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
                 st.session_state["disaster_active"] = True
-            # Frame map on the corridor (not a user location yet).
-            if sc.get("start_lat") is not None and sc.get("start_lon") is not None:
-                st.session_state["map_center"] = [
-                    float(sc["start_lat"]),
-                    float(sc["start_lon"]),
-                ]
-            elif sc.get("epi_lat") is not None:
+            # Frame map on the epi / apartment corridor (not a user location yet).
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 st.session_state["map_center"] = [
                     float(sc["epi_lat"]),
                     float(sc["epi_lon"]),
                 ]
+            elif sc.get("start_lat") is not None and sc.get("start_lon") is not None:
+                st.session_state["map_center"] = [
+                    float(sc["start_lat"]),
+                    float(sc["start_lon"]),
+                ]
             st.session_state["fixed_scenario_id"] = sc.get("id")
             sid = sc.get("id") or "qa_1"
             msg = (
-                f"Fixed scenario · {sid} · epicenter + flood ({n} amber edges). "
-                "Click the map to set your location."
+                f"Fixed scenario · {sid} · epicenter + broken roads near epi "
+                f"({n} amber edges). Click the map to set your location."
             )
         else:
             lat, lon = _mild_default_epi(G)
             _set_epicenter(lat, lon)
             st.session_state["disaster_active"] = True
-            n = _set_flood_corridor(G, near_node=None, seed=17082, corridor_extra=14)
+            n = _set_broken_roads_near_epi(
+                G,
+                epicenter_lonlat=(lon, lat),
+                seed=17082,
+                corridor_extra=14,
+            )
             st.session_state["map_center"] = [lat, lon]
             msg = (
-                f"Epicenter + flood ({n} amber edges). "
+                f"Epicenter + broken roads near epi ({n} amber edges). "
                 "Click the map to set your location."
             )
     except TrafficNotConfiguredError as exc:
@@ -1581,12 +1666,20 @@ def _run_judge_demo(G) -> str:
             )
             msg = (
                 f"Judge pin · {title} · Best exit {best_label} · "
-                f"Flooded corridor ({n} amber edges)."
+                f"Broken roads near epicenter ({n} amber edges)."
             )
             st.session_state["judge_scenario_id"] = sc.get("id")
         else:
-            n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
-            msg = f"Flooded corridor ({n} amber edges)."
+            epi_ll = (
+                (
+                    float(st.session_state["epi_lon"]),
+                    float(st.session_state["epi_lat"]),
+                )
+                if st.session_state.get("epi_lat") is not None
+                else None
+            )
+            n = _set_broken_roads_near_epi(G, epicenter_lonlat=epi_ll)
+            msg = f"Broken roads near epicenter ({n} amber edges)."
     except TrafficNotConfiguredError as exc:
         msg = str(exc)
         st.session_state["map_status"] = msg
@@ -1790,7 +1883,7 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Map shows epicenter, 5 evacuate exits, and flood damage. '
+        '<div class="qr-tag">Map shows epicenter, 5 evacuate exits, and broken roads near epicenter. '
         "Click to set your location → see the recommended exit → <b>Find escape route</b>."
         "</div>",
         unsafe_allow_html=True,
@@ -1811,7 +1904,7 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, nodes, origin)
 
-    # First open: fixed epi + flood + 5 exits only — never auto-run compare.
+    # First open: fixed epi + near-epi broken roads + 5 exits — never auto-run compare.
     if not st.session_state.get("_demo_autoload_done"):
         st.session_state["_demo_autoload_done"] = True
         st.session_state["_feed_autoload_done"] = True
@@ -1896,7 +1989,7 @@ def main():
                 '<div class="qr-oneliner">Your location · '
                 "<span>click the map</span>"
                 '<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
-                "Epicenter, 5 exits, and flood damage are already on the map"
+                "Epicenter, 5 exits, and broken roads near epicenter are already on the map"
                 "</span></div>",
                 unsafe_allow_html=True,
             )
@@ -2597,6 +2690,7 @@ def main():
                     weight=5,
                     opacity=0.9,
                     dash_array="6 8",
+                    tooltip="Broken roads near epicenter",
                 )
             ).add_to(m)
 
