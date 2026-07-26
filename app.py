@@ -77,7 +77,7 @@ from src.utils import DATA_DIR, HYBRID_CHECKPOINT, get_graph_origin
 DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
 JUDGE_PIN_MIN_DELTA = 2.0  # Soft check when comparing on the pinned corridor
 EXIT_OVERRIDE_CLICK_M = 90.0  # map click near an exit pin → silent override
-SUGGESTED_CLICK_M = 160.0  # click near suggested apartment → arm win-corridor check
+SUGGESTED_CLICK_M = 160.0  # click near known-good corridor → arm win check
 # Stale Cloud demo PHN mix reports ≈45.3% and typically ties Classical.
 STALE_Q_PCT_LO = 40.0
 STALE_Q_PCT_HI = 52.0
@@ -1662,11 +1662,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def _suggested_apartment_coords(
     scenario: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Known-good apartment / start from demo_scenarios.json (qa_1 pin).
-
-    Audience clicks this faint marker so free-click doesn't land in a tie zone.
-    """
+    """Known-good start coords from demo_scenarios.json (qa_1) for silent arming."""
     sc = scenario if scenario is not None else _judge_pinned_scenario()
     if not sc:
         return None
@@ -1680,10 +1676,6 @@ def _suggested_apartment_coords(
         "lat": float(lat),
         "lon": float(lon),
         "node": node,
-        "hint": str(
-            jd.get("click_hint")
-            or "Faint cyan ring · NW apartment — click here for Hybrid win"
-        ),
         "scenario_id": sc.get("id") or jd.get("scenario_id") or "qa_1",
         "best_exit": sc.get("best_exit") or jd.get("best_exit"),
         "best_exit_label": (
@@ -2006,20 +1998,13 @@ def _load_fixed_scenario(G) -> str:
             if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
                 st.session_state["disaster_active"] = True
-            # Frame map on the suggested apartment corridor (known Hybrid win zone).
-            sug = _suggested_apartment_coords(sc)
-            if sug is not None:
-                st.session_state["suggested_start_lat"] = sug["lat"]
-                st.session_state["suggested_start_lon"] = sug["lon"]
-                st.session_state["suggested_start_node"] = sug.get("node")
-                st.session_state["suggested_click_hint"] = sug["hint"]
-                st.session_state["map_center"] = [sug["lat"], sug["lon"]]
-                st.session_state["map_zoom"] = 16
-            elif sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+            # Frame map on the fixed epicenter (broken roads + exits already set).
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
                 st.session_state["map_center"] = [
                     float(sc["epi_lat"]),
                     float(sc["epi_lon"]),
                 ]
+                st.session_state["map_zoom"] = 15
             elif sc.get("start_lat") is not None and sc.get("start_lon") is not None:
                 st.session_state["map_center"] = [
                     float(sc["start_lat"]),
@@ -2027,12 +2012,10 @@ def _load_fixed_scenario(G) -> str:
                 ]
             st.session_state["fixed_scenario_id"] = sc.get("id")
             sid = sc.get("id") or "qa_1"
-            hint = (sug or {}).get("hint") if sug else None
             msg = (
                 f"Fixed scenario · {sid} · epicenter + broken roads near epi "
-                f"({n} amber edges). Click the faint cyan apartment ring, then "
+                f"({n} amber edges). Click the map to set your location, then "
                 f"Find escape route."
-                + (f" · {hint}" if hint else "")
             )
         else:
             lat, lon = _mild_default_epi(G)
@@ -2209,7 +2192,7 @@ def _evaluate_demo_pin(
 
 
 def _arm_judge_if_near_suggested(G, lat: float, lon: float) -> bool:
-    """Arm Escape win-corridor check when click is near the suggested apartment."""
+    """Arm Escape win-corridor check when click is near the known-good start."""
     sug = _suggested_apartment_coords()
     if sug is None:
         st.session_state.pop("judge_demo_armed", None)
@@ -2227,70 +2210,6 @@ def _arm_judge_if_near_suggested(G, lat: float, lon: float) -> bool:
         return True
     st.session_state.pop("judge_demo_armed", None)
     return False
-
-
-def _draw_suggested_apartment_on_map(m, G) -> None:
-    """Faint cyan apartment marker — known-good Hybrid win start (no auto-run)."""
-    sug = _suggested_apartment_coords()
-    if sug is None:
-        return
-    lat, lon = sug["lat"], sug["lon"]
-    # Prefer graph-snapped coords when the pinned node is present.
-    node = sug.get("node")
-    if node is not None and node in G.nodes:
-        lat = float(G.nodes[node]["y"])
-        lon = float(G.nodes[node]["x"])
-    tip = sug.get("hint") or "Suggested apartment · click here"
-    # Skip duplicate when user already snapped exactly onto the pin.
-    start = st.session_state.get("start_node")
-    if (
-        st.session_state.get("location_set")
-        and start is not None
-        and node is not None
-        and start == node
-    ):
-        return
-    _no_click(
-        folium.CircleMarker(
-            [lat, lon],
-            radius=16,
-            color="#00E5FF",
-            weight=2,
-            fill=True,
-            fill_color="#00E5FF",
-            fill_opacity=0.12,
-            opacity=0.55,
-            tooltip=tip,
-        )
-    ).add_to(m)
-    _no_click(
-        folium.CircleMarker(
-            [lat, lon],
-            radius=6,
-            color="#00E5FF",
-            weight=2,
-            fill=True,
-            fill_color="#0a0f1e",
-            fill_opacity=0.35,
-            opacity=0.7,
-            tooltip=tip,
-        )
-    ).add_to(m)
-    _no_click(
-        folium.Marker(
-            [lat, lon],
-            icon=folium.DivIcon(
-                html=(
-                    '<div style="font-size:10px;font-weight:600;color:#7EEFFF;'
-                    "opacity:0.85;white-space:nowrap;text-shadow:0 1px 2px #041018;"
-                    'margin-left:10px;margin-top:-6px;">Suggested apartment</div>'
-                ),
-                icon_size=(140, 18),
-                icon_anchor=(0, 0),
-            ),
-            tooltip=tip,
-        )
-    ).add_to(m)
 
 
 def _set_location(G, lat: float, lon: float) -> None:
@@ -2369,16 +2288,10 @@ def _apply_map_click(G, lat: float, lon: float) -> str:
     except Exception:
         rec = f"Evacuate exit held · node {st.session_state.get('dest_node')}."
     label = _landmark_label_for(G, st.session_state.get("dest_node"))
-    if st.session_state.get("judge_demo_armed"):
-        msg = (
-            f"Suggested apartment · recommended {label}. "
-            "Press Find escape route for the Hybrid probability path."
-        )
-    else:
-        msg = (
-            f"Location set · recommended {label}. "
-            "(For the Hybrid win corridor, click the faint cyan Suggested apartment.)"
-        )
+    msg = (
+        f"Location set · recommended {label}. "
+        "Press Find escape route for the Hybrid probability path."
+    )
     st.session_state["map_status"] = msg
     _ = rec
     return msg
@@ -2521,14 +2434,11 @@ def main():
                 unsafe_allow_html=True,
             )
         else:
-            sug_hint = st.session_state.get("suggested_click_hint") or (
-                "Click the faint cyan Suggested apartment (NW, west of epi)"
-            )
             st.markdown(
                 '<div class="qr-oneliner">Your location · '
-                "<span>click Suggested apartment</span>"
-                f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
-                f"{sug_hint}"
+                "<span>click the map</span>"
+                '<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+                "Click anywhere on the map to set your start"
                 "</span></div>",
                 unsafe_allow_html=True,
             )
@@ -3324,9 +3234,6 @@ def main():
                     tooltip="Earthquake epicenter",
                 )
             ).add_to(fg)
-
-        # Suggested apartment (known Hybrid win corridor) — guide free-click.
-        _draw_suggested_apartment_on_map(fg, G)
 
         # Blue start (fixed location). When animating, the moving agent is drawn
         # by _draw_hybrid_path_animation; still show start faintly if mid-route.
