@@ -43,6 +43,7 @@ from src.utils import (
     get_graph_origin,
     node_xy_km,
     project_local_km,
+    softmax,
 )
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,26 @@ def _neighbor_toward_dest(G, neighbors, current, dest, origin):
     return best
 
 
+def _neighbor_softmax_probs(logits, neighbors, candidate_idx):
+    """Softmax over candidate neighbor slots; padded / masked → 0 mass."""
+    n = len(neighbors)
+    masked = np.full(n, -np.inf, dtype=np.float64)
+    scores = np.full(n, -np.inf, dtype=np.float64)
+    for i in range(n):
+        if i < len(logits) and np.isfinite(logits[i]):
+            scores[i] = float(logits[i])
+    for i in candidate_idx:
+        masked[i] = scores[i]
+    finite_idx = [i for i in candidate_idx if np.isfinite(masked[i])]
+    if not finite_idx:
+        return None, None
+    probs_sub = softmax([masked[i] for i in finite_idx])
+    probs = np.zeros(n, dtype=np.float64)
+    for j, i in enumerate(finite_idx):
+        probs[i] = float(probs_sub[j])
+    return probs, masked
+
+
 def _select_ml_neighbor(logits, neighbors, visited, path, G, dest, origin):
     """
     Argmax only among real neighbor slots (padded logits → -inf).
@@ -116,10 +137,13 @@ def _select_ml_neighbor(logits, neighbors, visited, path, G, dest, origin):
     Prefer unvisited nodes to break cycles. On near-ties, break with the
     live Dijkstra next hop (same local graph the oracle sees) so Hybrid /
     Classical approach optimal without inventing travel times.
+
+    Returns ``(next_node, mode, step_info)`` where ``step_info`` carries
+    softmax probabilities over candidates (demo visualization).
     """
     n = len(neighbors)
     if n == 0:
-        return None, "dead_end"
+        return None, "dead_end", None
 
     scores = np.full(n, -np.inf, dtype=np.float64)
     for i in range(n):
@@ -135,15 +159,50 @@ def _select_ml_neighbor(logits, neighbors, visited, path, G, dest, origin):
         if without_back:
             candidate_idx = without_back
 
-    masked = np.full(n, -np.inf, dtype=np.float64)
-    for i in candidate_idx:
-        masked[i] = scores[i]
+    probs, masked = _neighbor_softmax_probs(logits, neighbors, candidate_idx)
 
-    if not np.any(np.isfinite(masked)):
+    def _step_info(choice_i: int, mode: str):
+        if probs is None or choice_i is None:
+            return {
+                "mode": mode,
+                "chosen_prob": None,
+                "candidates": [
+                    {"node": int(nb) if isinstance(nb, (int, np.integer)) else nb,
+                     "prob": None, "chosen": False}
+                    for nb in neighbors
+                ],
+            }
+        cands = []
+        for i, nb in enumerate(neighbors):
+            p = float(probs[i]) if i < len(probs) else 0.0
+            if p <= 0.0 and i not in candidate_idx:
+                continue
+            cands.append(
+                {
+                    "node": int(nb) if isinstance(nb, (int, np.integer)) else nb,
+                    "prob": round(p, 6),
+                    "chosen": bool(i == choice_i),
+                }
+            )
+        cands.sort(key=lambda c: (-(c["prob"] or 0.0), str(c["node"])))
+        return {
+            "mode": mode,
+            "chosen_prob": (
+                round(float(probs[choice_i]), 6)
+                if choice_i is not None and choice_i < len(probs)
+                else None
+            ),
+            "candidates": cands,
+        }
+
+    if masked is None or not np.any(np.isfinite(masked)):
         nxt = dijkstra_next_node(G, path[-1] if path else neighbors[0], dest)
         if nxt is not None and nxt in neighbors:
-            return nxt, "dijkstra_step"
-        return _neighbor_toward_dest(G, neighbors, path[-1], dest, origin), "geo_step"
+            idx = neighbors.index(nxt)
+            return nxt, "dijkstra_step", _step_info(idx, "dijkstra_step")
+        geo = _neighbor_toward_dest(G, neighbors, path[-1], dest, origin)
+        idx = neighbors.index(geo) if geo in neighbors else 0
+        return geo, "geo_step", _step_info(idx, "geo_step")
 
     finite = masked[np.isfinite(masked)]
     best = float(np.max(finite))
@@ -155,12 +214,14 @@ def _select_ml_neighbor(logits, neighbors, visited, path, G, dest, origin):
         if dij is not None:
             for i in near:
                 if neighbors[i] == dij:
-                    return neighbors[i], "ml"
+                    return neighbors[i], "ml", _step_info(i, "ml")
     choice = int(np.argmax(masked))
-    return neighbors[choice], "ml"
+    return neighbors[choice], "ml", _step_info(choice, "ml")
 
 
-def _complete_with_dijkstra(env, path, dest, radii_trace, max_steps: int):
+def _complete_with_dijkstra(
+    env, path, dest, radii_trace, max_steps: int, step_trace: Optional[List] = None
+):
     """Append Dijkstra hops from current node to exit under live dynamics."""
     current = path[-1]
     hops = 0
@@ -171,6 +232,20 @@ def _complete_with_dijkstra(env, path, dest, radii_trace, max_steps: int):
         nxt = dijkstra_next_node(env.G, current, dest)
         if nxt is None:
             break
+        if step_trace is not None:
+            step_trace.append(
+                {
+                    "from": int(current)
+                    if isinstance(current, (int, np.integer))
+                    else current,
+                    "to": int(nxt) if isinstance(nxt, (int, np.integer)) else nxt,
+                    "mode": "dijkstra_assist",
+                    "prob": None,
+                    "candidates": [],
+                    "cum_logprob": None,
+                    "cum_prod": None,
+                }
+            )
         path.append(nxt)
         current = nxt
         env.t += 1
@@ -211,6 +286,9 @@ def predict_escape_route(
     Returns
     -------
     path, radii_trace, env, travel, sample_x, meta
+
+    ``meta`` includes ``step_trace``: per-hop softmax probabilities under the
+    Hybrid / Classical policy (demo animation + cumulative path score).
     """
     if start not in G or dest not in G:
         raise ValueError("Start or exit node is not on the Manila graph.")
@@ -242,6 +320,36 @@ def predict_escape_route(
     assist_hops = 0
     assist_reason = None
     revisit_budget = max(8, min(20, n_nodes // 10))
+    step_trace: List[Dict[str, Any]] = []
+    cum_logprob = 0.0
+    cum_prod = 1.0
+    n_prob_hops = 0
+
+    def _record_step(frm, to, info, mode: str):
+        nonlocal cum_logprob, cum_prod, n_prob_hops
+        p = None
+        if info and info.get("chosen_prob") is not None:
+            try:
+                p = float(info["chosen_prob"])
+            except (TypeError, ValueError):
+                p = None
+        entry: Dict[str, Any] = {
+            "from": int(frm) if isinstance(frm, (int, np.integer)) else frm,
+            "to": int(to) if isinstance(to, (int, np.integer)) else to,
+            "mode": mode,
+            "prob": round(p, 6) if p is not None else None,
+            "candidates": (info or {}).get("candidates") or [],
+        }
+        if p is not None and p > 0.0:
+            cum_logprob += float(np.log(p))
+            cum_prod *= p
+            n_prob_hops += 1
+            entry["cum_logprob"] = round(cum_logprob, 6)
+            entry["cum_prod"] = float(cum_prod)
+        else:
+            entry["cum_logprob"] = round(cum_logprob, 6) if n_prob_hops else None
+            entry["cum_prod"] = float(cum_prod) if n_prob_hops else None
+        step_trace.append(entry)
 
     for _ in range(max_steps):
         if current == dest:
@@ -253,7 +361,7 @@ def predict_escape_route(
         if not neighbors:
             assist_reason = assist_reason or "dead_end"
             assist_hops += _complete_with_dijkstra(
-                env, path, dest, radii_trace, max_steps
+                env, path, dest, radii_trace, max_steps, step_trace=step_trace
             )
             break
 
@@ -268,6 +376,7 @@ def predict_escape_route(
             logits = logits[:MAX_DEGREE]
 
         unvisited = [nb for nb in neighbors if nb not in visited]
+        step_info = None
         if not unvisited and current != dest:
             nxt = dijkstra_next_node(env.G, current, dest)
             if nxt is None or nxt not in neighbors:
@@ -276,14 +385,14 @@ def predict_escape_route(
                 )
             mode = "dijkstra_step"
         else:
-            nxt, mode = _select_ml_neighbor(
+            nxt, mode, step_info = _select_ml_neighbor(
                 logits, neighbors, visited, path, env.G, dest, env.origin
             )
 
         if nxt is None:
             assist_reason = assist_reason or "no_neighbor"
             assist_hops += _complete_with_dijkstra(
-                env, path, dest, radii_trace, max_steps
+                env, path, dest, radii_trace, max_steps, step_trace=step_trace
             )
             break
 
@@ -293,6 +402,7 @@ def predict_escape_route(
         else:
             ml_hops += 1
 
+        _record_step(current, nxt, step_info, mode)
         path.append(nxt)
         if nxt in visited:
             revisit_budget -= 1
@@ -303,7 +413,7 @@ def predict_escape_route(
                 radii_trace.append(env.current_radii())
                 assist_reason = assist_reason or "cycle_cap"
                 assist_hops += _complete_with_dijkstra(
-                    env, path, dest, radii_trace, max_steps
+                    env, path, dest, radii_trace, max_steps, step_trace=step_trace
                 )
                 break
         visited.add(nxt)
@@ -314,7 +424,7 @@ def predict_escape_route(
     if path[-1] != dest:
         assist_reason = assist_reason or "hop_cap"
         assist_hops += _complete_with_dijkstra(
-            env, path, dest, radii_trace, max_steps
+            env, path, dest, radii_trace, max_steps, step_trace=step_trace
         )
 
     travel = path_travel_time(env.G, path)
@@ -327,6 +437,10 @@ def predict_escape_route(
         "max_steps": max_steps,
         "hops": max(0, len(path) - 1),
         "disrupted_edges": len(disrupted),
+        "step_trace": step_trace,
+        "path_logprob": round(cum_logprob, 6) if n_prob_hops else None,
+        "path_prob_product": float(cum_prod) if n_prob_hops else None,
+        "n_prob_hops": n_prob_hops,
     }
     return path, radii_trace, env, travel, sample_x, meta
 
@@ -864,6 +978,9 @@ def compare_three_way(
         "safety": h_safe,
         "safety_score": float(h_safe["safety_score"]),
         "meta": h_meta,
+        "step_trace": h_meta.get("step_trace") or [],
+        "path_logprob": h_meta.get("path_logprob"),
+        "path_prob_product": h_meta.get("path_prob_product"),
         "radii_trace": h_radii,
         "sample_x": sample_x,
         "env": h_env,
