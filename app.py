@@ -1,13 +1,13 @@
 """
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
-Manila / Intramuros during an earthquake: set your location, epicenter
-expands with hazard time t, rank several evacuate areas (recommend the best),
-compare Hybrid QML vs Classical FiLM vs Dijkstra for the selected exit.
+Audience-first 3-step flow:
+  1) Location (map click, optional — judge demo sets it)
+  2) One primary CTA — Run demo (pinned qa_1 Hybrid win, end-to-end)
+  3) Map + metrics (Hybrid vs Classical vs Dijkstra)
 
-Mock feed leads with earthquake / disaster; congestion / flood remain as
-secondary overlays. Quantathon “Run judge demo” stays secondary (collapsed).
-Folium 2D only. Layout: left ~2/3 map · right ~1/3 scrollable panel.
+Advanced controls (ranked exits, congestion, place mode, feed) live in a
+collapsed expander. Multi-exit markers stay on the map. Folium 2D only.
 """
 
 from __future__ import annotations
@@ -324,6 +324,16 @@ st.markdown(
       display: inline-block; width: 0.7rem; height: 0.7rem;
       border-radius: 2px; margin-right: 0.28rem; vertical-align: -1px;
     }
+    .qr-step-label {
+      margin: 0.7rem 0 0.3rem 0;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+      text-transform: uppercase; color: var(--qr-mist);
+    }
+    .qr-oneliner {
+      color: #E8EEF6; font-size: 0.88rem; line-height: 1.4;
+      margin: 0.1rem 0 0.35rem 0;
+    }
+    .qr-oneliner span { color: #F5C542; font-weight: 600; }
     .qr-incident {
       background: rgba(10,15,30,0.55);
       border-left: 3px solid var(--qr-gold);
@@ -575,14 +585,15 @@ def _apply_advantage_scenario(G, scenario: Dict[str, Any]) -> str:
     m = scenario.get("metrics") or {}
     expected = ""
     if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
+        tag = "live flood" if m.get("verified_with_flood") else "stored"
         expected = (
-            f" Expected H={float(m['hybrid_time']):.1f} "
+            f" {tag} H={float(m['hybrid_time']):.1f} "
             f"< C={float(m['classical_time']):.1f}."
         )
     title = scenario.get("title") or scenario.get("id") or "advantage"
     msg = (
         f"Advantage demo · {title}.{expected} "
-        "Ready for Flooded corridor + Find route (or Run judge demo)."
+        "Ready — press Run demo."
     )
     st.session_state["map_status"] = msg
     st.session_state["advantage_scenario_id"] = scenario.get("id")
@@ -1280,8 +1291,23 @@ _JUDGE_FLOOD_BY_SCENARIO = {
 
 
 def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
-    """Flood seed / size for judge demo — prefer pinned Hybrid-win presets."""
+    """Flood seed / size for judge demo — prefer scenario pin, then table."""
     sid = str(scenario.get("id") or "")
+    if scenario.get("flood_seed") is not None:
+        return {
+            "seed": int(scenario["flood_seed"]),
+            "corridor_extra": int(
+                scenario.get("corridor_extra")
+                or (scenario.get("metrics") or {}).get("corridor_extra")
+                or 11
+            ),
+        }
+    m = scenario.get("metrics") or {}
+    if m.get("flood_seed") is not None:
+        return {
+            "seed": int(m["flood_seed"]),
+            "corridor_extra": int(m.get("corridor_extra") or 11),
+        }
     if sid in _JUDGE_FLOOD_BY_SCENARIO:
         return dict(_JUDGE_FLOOD_BY_SCENARIO[sid])
     return {
@@ -1292,14 +1318,21 @@ def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
 
 def _run_judge_demo(G) -> str:
     """
-    Quantathon secondary path: curated start+dest pair + judge_flood feed + auto-route.
+    Quantathon secondary path: curated start+dest + pinned flood + auto-route.
+
+    Locks evacuate exit (exit_auto=False) so ranking cannot steal the pin.
+    Caption uses live-verified flood metrics from demo_scenarios.json.
     """
     st.session_state.pop("_nudge_disruption", None)
     try:
         sc = _pick_advantage_scenario()
         if sc is not None:
             _apply_advantage_scenario(G, sc)
+            # Lock pin: do not let feed refresh / exit ranking override dest.
+            st.session_state["exit_auto"] = False
+            st.session_state["any_node_dest"] = False
             near = st.session_state.get("start_node")
+            flood_params = _judge_flood_params(sc)
             try:
                 from src.mock_traffic_feed import get_mock_traffic_feed
 
@@ -1309,21 +1342,41 @@ def _run_judge_demo(G) -> str:
                 n = _apply_feed_snapshot(snap)
                 feed.clear_force()
             except Exception:
-                flood_params = _judge_flood_params(sc)
                 n = _set_flood_corridor(
                     G,
                     near_node=near,
                     seed=flood_params["seed"],
                     corridor_extra=flood_params["corridor_extra"],
                 )
-            # Re-assert curated destination after feed apply.
+            # Re-assert curated start epi + destination after feed apply.
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
             dest = sc.get("dest_node")
             if dest is not None and dest in G.nodes:
                 _set_destination(G, dest, via="judge demo")
+                st.session_state["recommended_exit"] = dest
+            st.session_state["exit_auto"] = False
             title = sc.get("title") or sc.get("id") or "advantage"
+            m = sc.get("metrics") or {}
+            live_bit = ""
+            if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
+                live_bit = (
+                    f" Live-verified H={float(m['hybrid_time']):.1f} "
+                    f"< C={float(m['classical_time']):.1f}."
+                )
+            pl_note = ""
+            try:
+                if not quantum_status().get("pennylane_available"):
+                    pl_note = (
+                        " ⚠ PennyLane unavailable — Hybrid card will mirror "
+                        "Classical (install pennylane for the win)."
+                    )
+            except Exception:
+                pass
             msg = (
-                f"Judge demo · {title} · Flooded corridor ({n} amber edges). "
-                "Finding safest & fastest route…"
+                f"Judge demo · {title} · Flooded corridor ({n} amber edges · "
+                f"seed {flood_params['seed']}).{live_bit} "
+                f"Finding safest & fastest route…{pl_note}"
             )
         else:
             n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
@@ -1916,10 +1969,25 @@ def main():
                 st.rerun()
 
         with st.expander("Quantathon · Run judge demo", expanded=False):
-            st.caption(
-                "Secondary 60s path: curated start + evacuate dest + pinned flood "
-                "+ auto Find safest & fastest escape route."
+            _jd = (_load_demo_scenarios() or {}).get("judge_demo") or {}
+            _jd_h = _jd.get("live_hybrid_time")
+            _jd_c = _jd.get("live_classical_time")
+            _jd_cap = (
+                f"Pinned {_jd.get('scenario_id', 'qa_1')} · live-verified "
+                f"H={float(_jd_h):.1f} < C={float(_jd_c):.1f} under flood "
+                f"seed {_jd.get('flood_seed', '—')}."
+                if _jd_h is not None and _jd_c is not None
+                else (
+                    "Secondary path: curated start + evacuate dest + pinned flood "
+                    "+ auto Find safest & fastest escape route."
+                )
             )
+            st.caption(_jd_cap)
+            if not pl_ok:
+                st.warning(
+                    "PennyLane unavailable — judge demo cannot show a Hybrid win "
+                    "(Hybrid card mirrors Classical). Install pennylane, reboot."
+                )
             if st.button(
                 "Run judge demo",
                 type="secondary",
