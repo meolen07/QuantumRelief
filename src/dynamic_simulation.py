@@ -27,6 +27,8 @@ from .utils import Coord, edge_midpoint, get_graph_origin, project_local_km
 DISRUPTION_SOFT_MULT = 5.0
 DISRUPTION_SOFT_BLOCK_MULT = 8.0
 DISRUPTION_FLOOD_MULT = 12.0  # Ondoy-like soft flood stand-in (stronger than closed)
+# Post-quake broken roads near the epicenter (Escape primary damage story).
+DISRUPTION_BROKEN_MULT = 12.0
 
 
 def _edge_key(u: Any, v: Any) -> Tuple[Any, Any]:
@@ -46,7 +48,7 @@ class EdgeDisruptionSet:
     edges: List[Tuple[Any, Any]] = field(default_factory=list)
     multiplier: float = DISRUPTION_SOFT_MULT
     seed: Optional[int] = None
-    kind: str = "congestion"  # congestion | soft_block | flood
+    kind: str = "congestion"  # congestion | soft_block | flood | broken
 
     def normalized_edges(self) -> List[Tuple[Any, Any]]:
         seen = set()
@@ -226,6 +228,113 @@ def sample_flood_corridor(
         multiplier=float(multiplier),
         seed=seed,
         kind="flood",
+    )
+
+
+def sample_near_epi_broken_roads(
+    G: nx.Graph,
+    epicenter_lonlat: Coord,
+    *,
+    corridor_extra: int = 14,
+    multiplier: float = DISRUPTION_BROKEN_MULT,
+    radius_km: Optional[float] = None,
+    radius_mult: float = 1.4,
+    seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
+) -> EdgeDisruptionSet:
+    """
+    Soft-blocked / broken roads clustered near the earthquake epicenter.
+
+    Prefer edges whose midpoint (or either endpoint) lies within ``radius_km``
+    (default ≈ ``radius_mult × r_epi(t=0)`` ≈ 0.7 km). Grow a connected
+    corridor among those candidates so amber damage hugs the red hazard rings
+    — not a distant low-lat flood band.
+
+    Same soft-multiplier spirit as flood (×8–×14); kind is ``broken`` for
+    Escape copy ("Broken roads near epicenter").
+    """
+    if rng is None:
+        rng = random.Random(seed)
+
+    undirected = [(u, v) for u, v in G.edges()]
+    if not undirected:
+        return EdgeDisruptionSet(
+            edges=[], multiplier=multiplier, seed=seed, kind="broken"
+        )
+
+    epi_lon, epi_lat = float(epicenter_lonlat[0]), float(epicenter_lonlat[1])
+    r_max = float(radius_km) if radius_km is not None else (
+        float(radius_mult) * damage_radius(0.0, 1.0)
+    )
+    r_max = max(0.15, r_max)
+
+    def _edge_d_km(u: Any, v: Any) -> float:
+        mid = edge_midpoint(G, u, v)
+        mx, my = project_local_km(mid[0], mid[1], epi_lon, epi_lat)
+        d_mid = math.hypot(mx, my)
+        ux, uy = project_local_km(
+            float(G.nodes[u]["x"]), float(G.nodes[u]["y"]), epi_lon, epi_lat
+        )
+        vx, vy = project_local_km(
+            float(G.nodes[v]["x"]), float(G.nodes[v]["y"]), epi_lon, epi_lat
+        )
+        d_ends = min(math.hypot(ux, uy), math.hypot(vx, vy))
+        return min(d_mid, d_ends)
+
+    scored = [(_edge_d_km(u, v), (u, v)) for u, v in undirected]
+    scored.sort(key=lambda t: t[0])
+    near = [(e, d) for d, e in scored if d <= r_max]
+    # Soften if the ring is sparse: take nearest ~15% of edges (min 8).
+    if len(near) < 8:
+        n_pool = max(8, len(scored) // 7)
+        near = [(e, d) for d, e in scored[:n_pool]]
+    near_edges = [e for e, _ in near]
+    near_set = {_edge_key(u, v) for u, v in near_edges}
+    dist_map = {_edge_key(u, v): d for (u, v), d in near}
+
+    seed_edge = near_edges[rng.randrange(len(near_edges))]
+    selected: Dict[Tuple[Any, Any], Tuple[Any, Any]] = {
+        _edge_key(seed_edge[0], seed_edge[1]): seed_edge
+    }
+    frontier = [seed_edge]
+    extra = max(0, int(corridor_extra))
+    attempts = 0
+    while extra > 0 and frontier and attempts < len(undirected) * 4:
+        attempts += 1
+        bu, bv = frontier[rng.randrange(len(frontier))]
+        candidates: List[Tuple[Any, Any]] = []
+        for node in (bu, bv):
+            for nb in G.neighbors(node):
+                key = _edge_key(node, nb)
+                if key in selected:
+                    continue
+                # Prefer staying inside the near-epi pool; allow one hop out
+                # only when the frontier is stuck.
+                if key in near_set or len(candidates) == 0:
+                    candidates.append((node, nb))
+        # Restrict to near-epi when any in-pool neighbor exists.
+        in_pool = [e for e in candidates if _edge_key(e[0], e[1]) in near_set]
+        if in_pool:
+            candidates = in_pool
+        if not candidates:
+            frontier = [e for e in frontier if e != (bu, bv)]
+            if not frontier:
+                frontier = list(selected.values())
+            continue
+        candidates.sort(
+            key=lambda e: dist_map.get(_edge_key(e[0], e[1]), _edge_d_km(e[0], e[1]))
+        )
+        cut = max(1, (len(candidates) + 1) // 2)
+        nu, nv = candidates[rng.randrange(cut)]
+        selected[_edge_key(nu, nv)] = (nu, nv)
+        frontier.append((nu, nv))
+        extra -= 1
+
+    return EdgeDisruptionSet(
+        edges=list(selected.values()),
+        multiplier=float(multiplier),
+        seed=seed,
+        kind="broken",
     )
 
 

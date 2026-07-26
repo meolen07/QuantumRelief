@@ -9,9 +9,9 @@ Scenarios rotate by **Manila time-of-day** (morning / rush / evening / night)
 plus a deterministic wall-clock bucket (feels live; reproducible).
 
 **Primary:** earthquake / hazard zone (epicenter + soft Algorithm-1 penalties).
-**Secondary:** post-quake damaged roads (×~5), blocked corridors (×~8), and
-flooded corridor (×~12) as related dynamic-hazard cases (Ondoy-like).
-The Quantathon judge flood pin is one catalog entry (``judge_flood``).
+**Secondary:** post-quake broken roads near the epicenter (×~8–×14), blocked
+corridors (×~8), and flooded corridor (×~12) as a related Ondoy-like case.
+The Quantathon judge pin uses near-epi broken roads (``judge_broken``).
 """
 
 from __future__ import annotations
@@ -25,11 +25,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import networkx as nx
 
 from src.dynamic_simulation import (
+    DISRUPTION_BROKEN_MULT,
     DISRUPTION_FLOOD_MULT,
     DISRUPTION_SOFT_BLOCK_MULT,
     DISRUPTION_SOFT_MULT,
     EdgeDisruptionSet,
     sample_flood_corridor,
+    sample_near_epi_broken_roads,
     sample_random_disruptions,
 )
 from src.utils import DATA_DIR
@@ -252,17 +254,17 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
         ),
     },
     {
-        "id": "judge_flood",
-        "name": "Judge demo · flooded corridor",
-        "blurb": "Pinned Quantathon flood seed (Hybrid travel-win corridor) — secondary demo.",
+        "id": "judge_broken",
+        "name": "Judge demo · broken roads near epicenter",
+        "blurb": "Pinned Escape seed — amber broken roads hug the hazard rings (Hybrid travel-win corridor).",
         "judge_pin": True,
         "periods": (),
         "incidents": (
             {
-                "kind": "flood",
-                "label": "Flooded corridor · Pasig riverside",
+                "kind": "broken",
+                "label": "Broken roads near epicenter",
                 "severity": 0.95,
-                "area_hint": "Judge-pinned flood · Pasig side",
+                "area_hint": "Judge-pinned · near hazard rings",
                 "corridor_extra": 14,
                 "seed_offset": 17082,
             },
@@ -270,7 +272,7 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
     },
 )
 
-# Preferred catalog ids per Manila time-of-day (judge_flood excluded).
+# Preferred catalog ids per Manila time-of-day (judge_broken excluded).
 # Quake / hazard scenarios lead daytime pools — Earthquake Escape is primary.
 TIME_OF_DAY_POOLS: Dict[str, Tuple[str, ...]] = {
     "morning": (
@@ -372,8 +374,8 @@ def time_bucket_id(
     return epoch // max(1, int(bucket_minutes) * 60)
 
 
-def _load_judge_flood_params() -> Dict[str, int]:
-    """Pinned flood seed from demo_scenarios.json when present."""
+def _load_judge_damage_params() -> Dict[str, int]:
+    """Pinned near-epi broken-road seed from demo_scenarios.json when present."""
     defaults = {"seed": 17082, "corridor_extra": 14, "near_start": True}
     path = Path(DEMO_SCENARIOS_PATH)
     if not path.exists():
@@ -383,7 +385,11 @@ def _load_judge_flood_params() -> Dict[str, int]:
     except Exception:
         return defaults
     jd = payload.get("judge_demo") or {}
-    seed = jd.get("flood_seed")
+    seed = (
+        jd.get("broken_seed")
+        or jd.get("damage_seed")
+        or jd.get("flood_seed")
+    )
     extra = jd.get("corridor_extra")
     if seed is not None:
         defaults["seed"] = int(seed)
@@ -398,26 +404,34 @@ def _load_judge_flood_params() -> Dict[str, int]:
         "qa_4": {"seed": 18245, "corridor_extra": 14},
         "qa_5": {"seed": 16280, "corridor_extra": 8},
     }
-    # Prefer per-scenario flood fields from the curated scenario row.
+    # Prefer per-scenario broken/flood fields from the curated scenario row.
     scenarios = {
         str(s.get("id")): s for s in (payload.get("scenarios") or []) if s.get("id")
     }
     sc = scenarios.get(sid) or {}
-    sc_seed = sc.get("flood_seed")
+    sc_seed = (
+        sc.get("broken_seed")
+        or sc.get("damage_seed")
+        or sc.get("flood_seed")
+    )
     if sc_seed is None:
-        sc_seed = (sc.get("metrics") or {}).get("flood_seed")
-    sc_extra = sc.get("corridor_extra")
-    if sc_extra is None:
-        sc_extra = (sc.get("metrics") or {}).get("corridor_extra")
+        sc_seed = (sc.get("metrics") or {}).get("broken_seed") or (
+            sc.get("metrics") or {}
+        ).get("flood_seed")
     if sc_seed is not None:
         defaults["seed"] = int(sc_seed)
+        sc_extra = sc.get("corridor_extra") or (sc.get("metrics") or {}).get(
+            "corridor_extra"
+        )
         if sc_extra is not None:
             defaults["corridor_extra"] = int(sc_extra)
-    elif sid in by_id:
+    elif sid in by_id and seed is None:
         defaults.update(by_id[sid])
-    defaults["scenario_id"] = sid or "qa_1"
     return defaults
 
+
+# Back-compat alias for older call sites.
+_load_judge_flood_params = _load_judge_damage_params
 
 
 @dataclass
@@ -555,7 +569,7 @@ def _sample_epi_lonlat(
 def _merge_disruption_sets(
     parts: Sequence[EdgeDisruptionSet],
 ) -> EdgeDisruptionSet:
-    """Union edges; keep the strongest multiplier; prefer flood kind if present."""
+    """Union edges; keep the strongest multiplier; prefer broken/flood kinds."""
     if not parts:
         return EdgeDisruptionSet(edges=[], multiplier=DISRUPTION_SOFT_MULT, kind="none")
     seen: Dict[Tuple[Any, Any], Tuple[Any, Any]] = {}
@@ -564,11 +578,13 @@ def _merge_disruption_sets(
     seed = parts[0].seed
     for p in parts:
         max_mult = max(max_mult, float(p.multiplier))
-        if p.kind == "flood":
+        if p.kind == "broken":
+            kind = "broken"
+        elif p.kind == "flood" and kind != "broken":
             kind = "flood"
-        elif p.kind == "soft_block" and kind != "flood":
+        elif p.kind == "soft_block" and kind not in ("broken", "flood"):
             kind = "soft_block"
-        elif p.kind in DISASTER_KINDS and kind not in ("flood", "soft_block"):
+        elif p.kind in DISASTER_KINDS and kind not in ("broken", "flood", "soft_block"):
             kind = "earthquake"
         for u, v in p.normalized_edges():
             key = tuple(sorted((u, v)))
@@ -602,15 +618,22 @@ def _sample_incident(
     if kind in DISASTER_KINDS:
         lon, lat, r_epi = _sample_epi_lonlat(G, spec, seed)
         # Soft Algorithm-1 ring penalties come from epicenter dynamics;
-        # optional light damaged-road overlay via corridor_extra.
+        # optional broken-road overlay clustered near the epi.
         if corridor > 0 and int(spec.get("n_seed_edges") or 0) > 0:
-            dset = sample_random_disruptions(
+            dset = sample_near_epi_broken_roads(
                 G,
-                n_seed_edges=n_seed,
+                (lon, lat),
                 corridor_extra=corridor,
                 multiplier=DISRUPTION_SOFT_MULT,
-                soft_block=False,
+                radius_km=float(spec.get("radius_km") or (1.4 * float(r_epi))),
                 seed=seed,
+            )
+            # Mild overlay for catalog quake+damage — keep kind soft congestion.
+            dset = EdgeDisruptionSet(
+                edges=dset.normalized_edges(),
+                multiplier=DISRUPTION_SOFT_MULT,
+                seed=seed,
+                kind="congestion",
             )
         else:
             dset = EdgeDisruptionSet(
@@ -630,7 +653,25 @@ def _sample_incident(
         )
         return incident, dset
 
-    if kind in ("flood", "flooded"):
+    if kind in ("broken", "near_epi", "quake_damage", "damaged"):
+        # Prefer explicit epi from spec; else graph-relative sample.
+        if spec.get("epi_lon") is not None and spec.get("epi_lat") is not None:
+            lon, lat = float(spec["epi_lon"]), float(spec["epi_lat"])
+            r_epi = float(spec.get("r_epi_km") or 0.5)
+        else:
+            lon, lat, r_epi = _sample_epi_lonlat(G, spec, seed)
+        r_km = spec.get("radius_km")
+        dset = sample_near_epi_broken_roads(
+            G,
+            (lon, lat),
+            corridor_extra=corridor,
+            multiplier=float(spec.get("multiplier") or DISRUPTION_BROKEN_MULT),
+            radius_km=float(r_km) if r_km is not None else (1.4 * float(r_epi)),
+            seed=seed,
+        )
+        mult = float(dset.multiplier)
+        kind_out = "broken"
+    elif kind in ("flood", "flooded"):
         dset = sample_flood_corridor(
             G,
             near_node=near_node,
@@ -695,49 +736,72 @@ def build_snapshot_for_scenario(
 
     near = near_node
     incident_specs = list(scenario.get("incidents") or ())
-    # Judge pin: use demo_scenarios flood seed + prefer curated start if available.
+    # Judge pin: use demo_scenarios broken-road seed (+ curated epi when present).
+    pin_epi: Optional[Tuple[float, float]] = None
     if scenario.get("judge_pin"):
-        pin = _load_judge_flood_params()
+        pin = _load_judge_damage_params()
         if incident_specs:
             first = dict(incident_specs[0])
             first["seed_offset"] = 0  # absolute seed below
-            first["corridor_extra"] = int(pin.get("corridor_extra", 11))
+            first["corridor_extra"] = int(pin.get("corridor_extra", 14))
             incident_specs[0] = first
-            base_seed = int(pin.get("seed", 17025))
-        if near is None and pin.get("near_start"):
-            pass
+            base_seed = int(pin.get("seed", 17082))
+        # Prefer curated epi from demo_scenarios for near-epi clustering.
+        try:
+            payload = json.loads(Path(DEMO_SCENARIOS_PATH).read_text(encoding="utf-8"))
+            jd = payload.get("judge_demo") or {}
+            sid_pin = str(
+                jd.get("scenario_id") or payload.get("default_scenario_id") or ""
+            )
+            for s in payload.get("scenarios") or []:
+                if str(s.get("id")) == sid_pin and s.get("epi_lon") is not None:
+                    pin_epi = (float(s["epi_lon"]), float(s["epi_lat"]))
+                    break
+        except Exception:
+            pin_epi = None
 
     incidents: List[TrafficIncident] = []
     parts: List[EdgeDisruptionSet] = []
     epi_lonlat: Optional[Tuple[float, float]] = None
     r_epi_km: Optional[float] = None
     for i, spec in enumerate(incident_specs):
+        kind_l = str(spec.get("kind", "")).lower()
         inc, dset = _sample_incident(
             G,
             spec=spec,
             incident_id=f"{sid}:{i}",
             base_seed=base_seed,
-            near_node=near if str(spec.get("kind", "")).lower().startswith("flood") else None,
+            near_node=near if kind_l.startswith("flood") else None,
         )
         # Absolute seed override for judge pin first incident.
         if scenario.get("judge_pin") and i == 0:
-            pin = _load_judge_flood_params()
-            dset = sample_flood_corridor(
+            pin = _load_judge_damage_params()
+            epi_for_pin = pin_epi
+            if epi_for_pin is None and near is not None and near in G.nodes:
+                epi_for_pin = (float(G.nodes[near]["x"]), float(G.nodes[near]["y"]))
+            if epi_for_pin is None:
+                epi_for_pin = _graph_center_lonlat(G)
+            dset = sample_near_epi_broken_roads(
                 G,
-                near_node=near,
-                corridor_extra=int(pin.get("corridor_extra", 11)),
-                multiplier=DISRUPTION_FLOOD_MULT,
-                seed=int(pin.get("seed", 17025)),
+                epi_for_pin,
+                corridor_extra=int(pin.get("corridor_extra", 14)),
+                multiplier=DISRUPTION_BROKEN_MULT,
+                seed=int(pin.get("seed", 17082)),
             )
             inc = TrafficIncident(
                 id=f"{sid}:0",
-                kind="flood",
-                label=str(spec.get("label") or "Flooded corridor · Pasig riverside"),
+                kind="broken",
+                label=str(spec.get("label") or "Broken roads near epicenter"),
                 severity=float(spec.get("severity") or 0.95),
-                area_hint=str(spec.get("area_hint") or "Judge-pinned flood · Pasig side"),
+                area_hint=str(
+                    spec.get("area_hint") or "Judge-pinned · near hazard rings"
+                ),
                 edges=dset.normalized_edges(),
-                multiplier=DISRUPTION_FLOOD_MULT,
+                multiplier=DISRUPTION_BROKEN_MULT,
             )
+            if epi_lonlat is None:
+                epi_lonlat = (float(epi_for_pin[0]), float(epi_for_pin[1]))
+                r_epi_km = 0.5
         # First disaster epicenter wins (compound scenarios keep one primary epi).
         if inc.is_disaster and epi_lonlat is None and inc.epi_lon is not None and inc.epi_lat is not None:
             epi_lonlat = (float(inc.epi_lon), float(inc.epi_lat))
