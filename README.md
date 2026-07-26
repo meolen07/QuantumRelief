@@ -9,7 +9,7 @@ Team 5 — **Quantrio** · QC4SG SEA Quantathon 2026
 [PennyLane](https://pennylane.ai)
 [License](LICENSE)
 
-Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)** · Judge defense: [`docs/TECHNICAL_QA.md`](docs/TECHNICAL_QA.md)
+Live demo: **[quantumrelief.streamlit.app](https://quantumrelief.streamlit.app)**
 
 **Tagline:** Earthquake Escape — safest & fastest evacuate exit under expanding hazard.
 
