@@ -12,8 +12,10 @@ collapsed expander. Multi-exit markers stay on the map. Folium 2D only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,9 +72,10 @@ from src.traffic_provider import (
     get_traffic_provider,
     traffic_mode_badge,
 )
-from src.utils import DATA_DIR, get_graph_origin
+from src.utils import DATA_DIR, HYBRID_CHECKPOINT, get_graph_origin
 
 DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
+JUDGE_PIN_MIN_DELTA = 2.0  # Run demo must show H < C by at least this margin
 
 HYBRID_ROUTE_COLOR = "#00E5FF"
 CLASSICAL_ROUTE_COLOR = "#F5C542"
@@ -1279,8 +1282,9 @@ def _handle_traffic_error(exc: Exception) -> None:
         pass
 
 
-# Pinned flood seeds that keep Hybrid travel ≤ Classical on curated corridors
+# Pinned flood seeds that keep Hybrid travel < Classical on curated corridors
 # (verified against film_hybrid.pt / film_classical.pt + demo_scenarios.json).
+# Fallback only — live pin lives in data/demo_scenarios.json (SSoT).
 _JUDGE_FLOOD_BY_SCENARIO = {
     "qa_1": {"seed": 17012, "corridor_extra": 11},
     "qa_2": {"seed": 17025, "corridor_extra": 11},
@@ -1288,6 +1292,27 @@ _JUDGE_FLOOD_BY_SCENARIO = {
     "qa_4": {"seed": 17025, "corridor_extra": 8},
     "qa_5": {"seed": 17025, "corridor_extra": 6},
 }
+
+
+def _hybrid_ckpt_debug() -> Dict[str, Any]:
+    """sha/mtime of models/film_hybrid.pt for Cloud pin diagnostics."""
+    path = Path(HYBRID_CHECKPOINT)
+    out: Dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "sha16": None,
+        "mtime_utc": None,
+        "size": None,
+    }
+    if not path.exists():
+        return out
+    data = path.read_bytes()
+    out["sha16"] = hashlib.sha256(data).hexdigest()[:16]
+    out["size"] = len(data)
+    out["mtime_utc"] = datetime.fromtimestamp(
+        path.stat().st_mtime, tz=timezone.utc
+    ).strftime("%Y-%m-%d %H:%M UTC")
+    return out
 
 
 def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
@@ -1316,47 +1341,115 @@ def _judge_flood_params(scenario: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
+    """
+    Single source of truth: data/demo_scenarios.json → judge_demo.scenario_id.
+
+    Ignores session exit picks / Advanced overrides for the audience path.
+    """
+    payload = _load_demo_scenarios()
+    if not payload:
+        return None
+    jd = payload.get("judge_demo") or {}
+    sid = str(
+        jd.get("scenario_id")
+        or payload.get("default_scenario_id")
+        or "qa_1"
+    )
+    scenarios = list(payload.get("scenarios") or [])
+    for s in scenarios:
+        if str(s.get("id")) == sid:
+            # Overlay judge_demo flood pin when present.
+            out = dict(s)
+            if jd.get("flood_seed") is not None:
+                out["flood_seed"] = int(jd["flood_seed"])
+            if jd.get("corridor_extra") is not None:
+                out["corridor_extra"] = int(jd["corridor_extra"])
+            out["_payload_q_pct"] = payload.get("quantum_contribution_pct")
+            out["_judge_demo"] = jd
+            return out
+    return _pick_advantage_scenario(payload)
+
+
+def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Hard-lock start, dest, epi, flood from the pinned scenario.
+
+    Session exit ranking / map clicks must not steal the judge corridor.
+    """
+    st.session_state["exit_auto"] = False
+    st.session_state["any_node_dest"] = False
+    st.session_state.pop("_nudge_disruption", None)
+
+    start = scenario.get("start_node")
+    if start is not None and start in G.nodes:
+        st.session_state["start_node"] = start
+        st.session_state["loc_lat"] = float(G.nodes[start]["y"])
+        st.session_state["loc_lon"] = float(G.nodes[start]["x"])
+        st.session_state["map_center"] = [
+            float(st.session_state["loc_lat"]),
+            float(st.session_state["loc_lon"]),
+        ]
+    else:
+        _set_location(
+            G,
+            float(scenario["start_lat"]),
+            float(scenario["start_lon"]),
+        )
+
+    dest = scenario.get("dest_node")
+    if dest is not None and dest in G.nodes:
+        _set_destination(G, dest, via="judge pin")
+        st.session_state["recommended_exit"] = dest
+    elif scenario.get("exit_lat") is not None and scenario.get("exit_lon") is not None:
+        _set_destination_from_latlon(
+            G,
+            float(scenario["exit_lat"]),
+            float(scenario["exit_lon"]),
+            via="judge pin",
+        )
+        st.session_state["recommended_exit"] = st.session_state.get("dest_node")
+
+    if scenario.get("epi_lat") is not None and scenario.get("epi_lon") is not None:
+        _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
+        st.session_state["disaster_active"] = True
+
+    flood_params = _judge_flood_params(scenario)
+    near = st.session_state.get("start_node")
+    # Authoritative flood from JSON pin (not feed lottery / stale seed_offset).
+    n = _set_flood_corridor(
+        G,
+        near_node=near,
+        seed=flood_params["seed"],
+        corridor_extra=flood_params["corridor_extra"],
+    )
+    # Re-assert after flood apply (feed/clear must not steal pin).
+    if scenario.get("epi_lat") is not None and scenario.get("epi_lon") is not None:
+        _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
+        st.session_state["disaster_active"] = True
+    if dest is not None and dest in G.nodes:
+        _set_destination(G, dest, via="judge pin")
+        st.session_state["recommended_exit"] = dest
+    st.session_state["exit_auto"] = False
+    st.session_state["advantage_scenario_id"] = scenario.get("id")
+    flood_params["n_edges"] = int(n)
+    return flood_params
+
+
 def _run_judge_demo(G) -> str:
     """
-    Primary audience path: curated start+dest + pinned flood + auto-route.
+    Primary audience path: hard-locked pin from demo_scenarios.json + auto-route.
 
-    Locks evacuate exit (exit_auto=False) so ranking cannot steal the pin.
-    Caption uses live-verified flood metrics from demo_scenarios.json.
+    Forces start / dest / epi / flood from JSON; ignores conflicting session
+    exit picks. Caption uses live-verified flood metrics only.
     """
-    st.session_state.pop("_nudge_disruption", None)
+    st.session_state.pop("demo_pin_failed", None)
+    st.session_state.pop("demo_pin_fail_detail", None)
     try:
-        sc = _pick_advantage_scenario()
+        sc = _judge_pinned_scenario()
         if sc is not None:
-            _apply_advantage_scenario(G, sc)
-            # Lock pin: do not let feed refresh / exit ranking override dest.
-            st.session_state["exit_auto"] = False
-            st.session_state["any_node_dest"] = False
-            near = st.session_state.get("start_node")
-            flood_params = _judge_flood_params(sc)
-            try:
-                from src.mock_traffic_feed import get_mock_traffic_feed
-
-                feed = get_mock_traffic_feed()
-                feed.force_scenario("judge_flood")
-                snap = feed.current(G, near_node=near)
-                n = _apply_feed_snapshot(snap)
-                feed.clear_force()
-            except Exception:
-                n = _set_flood_corridor(
-                    G,
-                    near_node=near,
-                    seed=flood_params["seed"],
-                    corridor_extra=flood_params["corridor_extra"],
-                )
-            # Re-assert curated start epi + destination after feed apply.
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
-                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
-                st.session_state["disaster_active"] = True
-            dest = sc.get("dest_node")
-            if dest is not None and dest in G.nodes:
-                _set_destination(G, dest, via="judge demo")
-                st.session_state["recommended_exit"] = dest
-            st.session_state["exit_auto"] = False
+            flood_params = _force_judge_pin(G, sc)
+            n = int(flood_params.get("n_edges") or 0)
             title = sc.get("title") or sc.get("id") or "advantage"
             m = sc.get("metrics") or {}
             live_bit = ""
@@ -1379,12 +1472,17 @@ def _run_judge_demo(G) -> str:
                 f"seed {flood_params['seed']}).{live_bit} "
                 f"Finding safest & fastest route…{pl_note}"
             )
+            st.session_state["judge_demo_armed"] = True
+            st.session_state["judge_scenario_id"] = sc.get("id")
+            st.session_state["_schedule_auto_run"] = True
         else:
             n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
             msg = (
                 f"Judge demo · Flooded corridor ({n} amber edges) near your start. "
                 "Finding safest & fastest route…"
             )
+            st.session_state["judge_demo_armed"] = False
+            st.session_state.pop("_schedule_auto_run", None)
     except TrafficNotConfiguredError as exc:
         msg = str(exc)
         st.session_state["map_status"] = msg
@@ -1392,9 +1490,91 @@ def _run_judge_demo(G) -> str:
         st.session_state["judge_demo_armed"] = False
         return msg
     st.session_state["map_status"] = msg
-    st.session_state["_schedule_auto_run"] = True
-    st.session_state["judge_demo_armed"] = True
     return msg
+
+
+def _evaluate_demo_pin(
+    *,
+    hybrid_travel: float,
+    classical_travel: Optional[float],
+    q_contrib: Optional[float],
+    hybrid_fell_back: bool,
+    hybrid_deferred: bool,
+) -> None:
+    """
+    After compare: refuse 'success' when pinned demo does not show H < C.
+
+    Cloud stale film_hybrid.pt (~45.3% demo mix) typically ties Classical.
+    """
+    if not st.session_state.get("judge_demo_armed"):
+        return
+    sid = st.session_state.get("judge_scenario_id") or "qa_1"
+    ckpt = _hybrid_ckpt_debug()
+    pl_ok = bool(quantum_status().get("pennylane_available"))
+    expected_q = None
+    payload = _load_demo_scenarios() or {}
+    if payload.get("quantum_contribution_pct") is not None:
+        try:
+            expected_q = float(payload["quantum_contribution_pct"])
+        except (TypeError, ValueError):
+            expected_q = None
+
+    ct = float(classical_travel) if classical_travel is not None else None
+    ht = float(hybrid_travel)
+    # Strict audience contract: Hybrid travel must be strictly below Classical.
+    strict_win = (
+        ct is not None
+        and ct > 1e-6
+        and ht < ct
+        and not hybrid_fell_back
+        and not hybrid_deferred
+    )
+    st.session_state["demo_debug"] = {
+        "scenario_id": sid,
+        "q_pct": q_contrib,
+        "hybrid_travel": ht,
+        "classical_travel": ct,
+        "expected_q_pct": expected_q,
+        "ckpt_sha16": ckpt.get("sha16"),
+        "ckpt_mtime": ckpt.get("mtime_utc"),
+        "pennylane": pl_ok,
+        "strict_win": bool(strict_win),
+    }
+    if strict_win:
+        st.session_state["demo_pin_failed"] = False
+        st.session_state.pop("demo_pin_fail_detail", None)
+        return
+
+    checks = [
+        f"PennyLane available: {'yes' if pl_ok else 'NO — Hybrid mirrors Classical'}",
+        f"film_hybrid.pt exists: {'yes' if ckpt.get('exists') else 'NO'}",
+        f"film_hybrid.pt sha16: {ckpt.get('sha16') or '—'}",
+        f"film_hybrid.pt mtime: {ckpt.get('mtime_utc') or '—'}",
+        f"quantum % this run: {q_contrib:.1f}%"
+        if q_contrib is not None
+        else "quantum % this run: N/A",
+        (
+            f"expected quantum % (demo_scenarios.json): ≈{expected_q:.1f}%"
+            if expected_q is not None
+            else "expected quantum %: (missing from demo_scenarios.json)"
+        ),
+        f"live travel: H={ht:.1f}"
+        + (f" C={ct:.1f}" if ct is not None else " C=—")
+        + (f" Δ={ct - ht:.1f}" if ct is not None else ""),
+        f"scenario id: {sid}",
+        "Upload models/film_hybrid.pt (not a *_bak / demo 45.3% checkpoint) "
+        "+ data/demo_scenarios.json + app.py, then Reboot Cloud.",
+    ]
+    if q_contrib is not None and expected_q is not None and abs(q_contrib - expected_q) > 15:
+        checks.insert(
+            0,
+            f"STALE CHECKPOINT LIKELY: q%={q_contrib:.1f} vs expected ≈{expected_q:.1f}",
+        )
+    detail = "\n".join(f"• {c}" for c in checks)
+    st.session_state["demo_pin_failed"] = True
+    st.session_state["demo_pin_fail_detail"] = detail
+    # Suppress success-shaped state for the audience path.
+    st.session_state["is_hybrid_route"] = False
 
 
 def _set_location(G, lat: float, lon: float) -> None:
@@ -1656,6 +1836,22 @@ def main():
             run = True
         st.caption(st.session_state.get("map_status", ""))
 
+        # Always-visible demo debug (Cloud stale-checkpoint diagnosis).
+        _dbg = st.session_state.get("demo_debug") or {}
+        if _dbg or st.session_state.get("judge_demo_armed"):
+            _sid = _dbg.get("scenario_id") or st.session_state.get(
+                "judge_scenario_id", _jd_sid
+            )
+            _q = _dbg.get("q_pct")
+            _ht = _dbg.get("hybrid_travel")
+            _ct = _dbg.get("classical_travel")
+            _q_s = f"{float(_q):.1f}%" if _q is not None else "—"
+            _h_s = f"{float(_ht):.1f}" if _ht is not None else "—"
+            _c_s = f"{float(_ct):.1f}" if _ct is not None else "—"
+            st.caption(
+                f"Demo debug · {_sid} · q={_q_s} · H={_h_s} · C={_c_s}"
+            )
+
         # Hazard scrub: clamp BEFORE widget; never write after (Streamlit owns key).
         _path_for_scrub = st.session_state.get("path")
         _radii_for_scrub = st.session_state.get("radii_trace")
@@ -1691,6 +1887,21 @@ def main():
         with st.expander("Advanced", expanded=False):
             st.caption(
                 "Feed, congestion, exit override, place mode — not needed for the 60s story."
+            )
+            _dbg2 = st.session_state.get("demo_debug") or {}
+            _ckpt = _hybrid_ckpt_debug()
+            _q2 = _dbg2.get("q_pct")
+            _q2s = f"{float(_q2):.1f}%" if _q2 is not None else "—"
+            _h2 = _dbg2.get("hybrid_travel")
+            _c2 = _dbg2.get("classical_travel")
+            _h2s = f"{float(_h2):.1f}" if _h2 is not None else "—"
+            _c2s = f"{float(_c2):.1f}" if _c2 is not None else "—"
+            st.caption(
+                "Demo pin · "
+                f"id={_dbg2.get('scenario_id') or st.session_state.get('judge_scenario_id') or '—'} · "
+                f"q={_q2s} · H={_h2s} · C={_c2s} · "
+                f"sha={_ckpt.get('sha16') or '—'} · "
+                f"mtime={_ckpt.get('mtime_utc') or '—'}"
             )
             st.markdown(_feed_incidents_html(), unsafe_allow_html=True)
             st.caption(_disruption_summary())
@@ -1902,6 +2113,13 @@ def main():
             '<div class="qr-step-label">Step 3 · Map + metrics</div>',
             unsafe_allow_html=True,
         )
+
+        # Hard-lock pin again immediately before route when judge demo is armed
+        # (session exit picks / Advanced must not steal the corridor).
+        if run and st.session_state.get("judge_demo_armed"):
+            sc_pin = _judge_pinned_scenario()
+            if sc_pin is not None:
+                _force_judge_pin(G, sc_pin)
 
         start = st.session_state["start_node"]
         dest = st.session_state["dest_node"]
@@ -2169,13 +2387,33 @@ def main():
                             "dest": dest,
                         }
                     )
-                    toast_msg = (
-                        deferred_note
-                        if deferred_note
-                        else "Escape route ready — Hybrid vs Classical vs Dijkstra."
+                    _evaluate_demo_pin(
+                        hybrid_travel=float(qml_travel),
+                        classical_travel=(
+                            float(classical_travel)
+                            if classical_path is not None
+                            else None
+                        ),
+                        q_contrib=q_contrib,
+                        hybrid_fell_back=bool(hybrid_fell_back),
+                        hybrid_deferred=bool(hybrid_deferred),
                     )
+                    pin_failed = bool(st.session_state.get("demo_pin_failed"))
+                    if pin_failed:
+                        toast_msg = (
+                            "Demo pin failed — Hybrid not loaded or wrong checkpoint"
+                        )
+                        toast_icon = "🚨"
+                    elif deferred_note:
+                        toast_msg = deferred_note
+                        toast_icon = "⚠️"
+                    else:
+                        toast_msg = (
+                            "Escape route ready — Hybrid vs Classical vs Dijkstra."
+                        )
+                        toast_icon = "✅"
                     try:
-                        st.toast(toast_msg, icon="✅")
+                        st.toast(toast_msg, icon=toast_icon)
                     except Exception:
                         pass
             except Exception as e:
@@ -2261,7 +2499,19 @@ def main():
 
             st.markdown('<div class="qr-panel"><h3>Hybrid vs Classical</h3></div>', unsafe_allow_html=True)
 
-            if hybrid_deferred and deferred_note:
+            pin_failed = bool(st.session_state.get("demo_pin_failed"))
+            if pin_failed:
+                st.error(
+                    "**Demo pin failed — Hybrid not loaded or wrong checkpoint**\n\n"
+                    + (st.session_state.get("demo_pin_fail_detail") or "")
+                )
+                # Never decorate a failed pin as a win / tie success.
+                beats_classical = False
+                ties_classical = False
+                safety_win = False
+                near_dij = False
+
+            if hybrid_deferred and deferred_note and not pin_failed:
                 st.warning(deferred_note)
                 reason = st.session_state.get("deferred_reason") or ""
                 if reason == "catastrophic":
@@ -2310,7 +2560,9 @@ def main():
             # Honest HERO: only when Hybrid strictly beats Classical on travel,
             # or travel-tie (≤2%) with higher safety. Never decorate a loss or fallback.
             show_hero = bool(
-                not hybrid_deferred and (beats_classical or safety_win)
+                not hybrid_deferred
+                and not pin_failed
+                and (beats_classical or safety_win)
             )
             win = " win" if show_hero else ""
             hero_pill = (
@@ -2399,6 +2651,8 @@ def main():
 
             if hybrid_deferred:
                 story = deferred_note or "Hybrid deferred · showing Classical"
+            elif pin_failed:
+                story = "Demo pin failed — Hybrid not loaded or wrong checkpoint"
             elif beats_classical and near_dij:
                 story = "Hybrid beats Classical · near Dijkstra"
             elif beats_classical:
@@ -2416,7 +2670,7 @@ def main():
             else:
                 story = f"{model_used} · local inference"
             st.markdown(
-                f'<div class="qr-card{" win" if (not hybrid_deferred) and (beats_classical or safety_win or near_dij) else ""}">'
+                f'<div class="qr-card{" win" if (not hybrid_deferred) and (not pin_failed) and (beats_classical or safety_win or near_dij) else ""}">'
                 f'<div class="label">Verdict</div>'
                 f'<div class="value" style="font-size:1.05rem">{story}</div></div>',
                 unsafe_allow_html=True,
