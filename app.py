@@ -119,6 +119,8 @@ st.markdown(
       --qr-mist: #9AA8BC;
       --qr-ink: #E8EEF6;
     }
+    /* overflow must stay scrollable — Streamlit emotion often sets
+       .stApp { overflow:hidden } which clips Folium → black map. */
     .stApp {
       background:
         radial-gradient(900px 480px at 18% -8%, rgba(0,229,255,0.10) 0%, transparent 55%),
@@ -126,6 +128,11 @@ st.markdown(
         linear-gradient(180deg, #0a0f1e 0%, #0a0b10 55%, #07080d 100%);
       color: var(--qr-ink);
       font-family: 'DM Sans', system-ui, sans-serif;
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+    }
+    section.main {
+      overflow: visible !important;
     }
     h1, h2, h3, h4 {
       font-family: 'DM Sans', system-ui, sans-serif !important;
@@ -485,15 +492,14 @@ def route_overlap_accuracy(pred: List, oracle: List) -> float:
 
 
 def _no_click(layer):
-    """Stop Folium overlays from stealing map clicks."""
+    """Stop Folium overlays from stealing map clicks (keep tooltips)."""
     try:
         layer.options["interactive"] = False
         if "bubblingMouseEvents" in layer.options:
             layer.options["bubblingMouseEvents"] = False
         if hasattr(layer, "popup"):
             layer.popup = None
-        if hasattr(layer, "tooltip"):
-            layer.tooltip = None
+        # Do NOT clear tooltips — hop P= labels / exit tips rely on them.
     except Exception:
         pass
     return layer
@@ -854,17 +860,19 @@ def _nearest_exit_within(G, lat: float, lon: float, max_m: float) -> Optional[An
 
 
 def build_base_map(G, map_center, map_zoom: int = 16):
-    """Basemap (tiles + roads). Dynamic overlays are added by caller.
+    """Stable basemap (CartoDB dark tiles + road graph).
 
-    Keep ``st_folium`` ``key`` stable (never include scrubber ``t``) so Cloud
-    does not remount the component identity every frame. We intentionally avoid
-    ``feature_group_to_add`` — it has caused SessionInfo / websocket fragility
-    on Streamlit Community Cloud with large overlay payloads.
+    ``streamlit-folium`` hashes the Leaflet script into the component key.
+    Anything that changes every animation hop MUST go in
+    ``feature_group_to_add`` — not on this map — or the iframe remounts
+    (black flash). Keep ``st_folium`` ``key=\"qr_map_escape\"`` always.
     """
     m = folium.Map(
         location=list(map_center),
         zoom_start=int(map_zoom),
         tiles="CartoDB dark_matter",
+        height=MAP_H,
+        width="100%",
     )
     for u, v in G.edges():
         u_lat, u_lon = G.nodes[u]["y"], G.nodes[u]["x"]
@@ -877,6 +885,11 @@ def build_base_map(G, map_center, map_zoom: int = 16):
         )
         _no_click(line).add_to(m)
     return m
+
+
+def _new_dynamic_feature_group() -> folium.FeatureGroup:
+    """Small overlay group swapped each frame without remounting tiles."""
+    return folium.FeatureGroup(name="qr_dynamic", show=True)
 
 
 def predict_route(
@@ -2435,6 +2448,21 @@ def main():
             st.session_state["dest_lat"] = float(G.nodes[far]["y"])
             st.session_state["dest_lon"] = float(G.nodes[far]["x"])
 
+    # Caption above the row so map_col is Folium-only (avoids caption + 820px
+    # iframe fighting overflow:hidden column height → clipped / blank map).
+    n_exits_cap = len(st.session_state.get("exit_nodes") or [])
+    st.caption(
+        f"Fault line → epicenter → broken roads · "
+        f"blue start / agent · cyan Hybrid hops · "
+        f"exits ({n_exits_cap or N_EVACUATE_AREAS})"
+        + (" · red rings = hazard" if _disaster_active() else "")
+        + (
+            " · Advanced comparison paths on"
+            if bool(st.session_state.get("_draw_cmp_paths"))
+            else ""
+        )
+    )
+
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
     # ------------------------------------------------------------------
@@ -3211,14 +3239,6 @@ def main():
         )
         disaster_on = _disaster_active()
         draw_cmp = bool(st.session_state.get("_draw_cmp_paths"))
-        n_exits = len(st.session_state.get("exit_nodes") or [])
-        st.caption(
-            f"Fault line → epicenter → broken roads · "
-            f"blue start / agent · cyan Hybrid hops · "
-            f"exits ({n_exits or N_EVACUATE_AREAS})"
-            + (" · red rings = hazard" if disaster_on else "")
-            + (" · Advanced comparison paths on" if draw_cmp else "")
-        )
 
         # Animation hop drives hazard rings when a route is active.
         anim_step = _path_anim_step(path) if path and len(path) >= 2 else 0
@@ -3237,14 +3257,16 @@ def main():
             t_show = 0
             max_t = 60
 
-        # Stable key (never include scrubber t). Overlays live on the map itself —
-        # safer on Cloud than feature_group_to_add with large dynamic JS payloads.
+        # Basemap = tiles + roads only (stable leaflet hash → no remount).
+        # Hop/t overlays go in feature_group_to_add so animation does not
+        # black-flash CartoDB tiles. Caption lives above the columns row.
         center = list(st.session_state["map_center"])
         zoom = int(st.session_state.get("map_zoom", 16))
         m = build_base_map(G, center, zoom)
+        fg = _new_dynamic_feature_group()
 
         # 1) Fault line through epicenter (under everything).
-        _draw_fault_line_on_map(m, float(epi[1]), float(epi[0]))
+        _draw_fault_line_on_map(fg, float(epi[1]), float(epi[0]))
 
         # 2) Soft road disruptions (amber dashed) — broken streets near epi.
         disruption_coords = disruption_edge_latlons(
@@ -3260,7 +3282,7 @@ def main():
                     dash_array="6 8",
                     tooltip="Broken roads near epicenter",
                 )
-            ).add_to(m)
+            ).add_to(fg)
 
         # 3) Red hazard rings + epicenter pin.
         if disaster_on:
@@ -3281,7 +3303,7 @@ def main():
                     fill_color=HAZARD_ROUTE_COLOR,
                     fill_opacity=op,
                 )
-                _no_click(ring).add_to(m)
+                _no_click(ring).add_to(fg)
 
             _no_click(
                 folium.CircleMarker(
@@ -3294,17 +3316,17 @@ def main():
                     fill_opacity=1.0,
                     tooltip="Earthquake epicenter",
                 )
-            ).add_to(m)
+            ).add_to(fg)
             _no_click(
                 folium.Marker(
                     [epi[1], epi[0]],
                     icon=folium.Icon(color="red", icon="warning-sign"),
                     tooltip="Earthquake epicenter",
                 )
-            ).add_to(m)
+            ).add_to(fg)
 
         # Suggested apartment (known Hybrid win corridor) — guide free-click.
-        _draw_suggested_apartment_on_map(m, G)
+        _draw_suggested_apartment_on_map(fg, G)
 
         # Blue start (fixed location). When animating, the moving agent is drawn
         # by _draw_hybrid_path_animation; still show start faintly if mid-route.
@@ -3316,7 +3338,7 @@ def main():
             s_lat = float(G.nodes[start_draw]["y"])
             s_lon = float(G.nodes[start_draw]["x"])
             if not path or len(path) < 2:
-                _draw_start_blue_dot(m, s_lat, s_lon, tooltip="Your location (start)")
+                _draw_start_blue_dot(fg, s_lat, s_lon, tooltip="Your location (start)")
             else:
                 # Ghost start so the origin stays visible while the agent moves.
                 _no_click(
@@ -3330,7 +3352,7 @@ def main():
                         fill_opacity=0.35,
                         tooltip="Start",
                     )
-                ).add_to(m)
+                ).add_to(fg)
 
         # All candidate evacuate areas (recommended highlighted; selected = routing).
         recommended_draw = st.session_state.get("recommended_exit")
@@ -3341,7 +3363,7 @@ def main():
         ):
             recommended_draw = dest_draw
         _draw_evacuate_exits_on_map(
-            m,
+            fg,
             G,
             dest_node=dest_draw if location_set else None,
             recommended_node=recommended_draw if location_set else None,
@@ -3360,7 +3382,7 @@ def main():
                         dash_array="8 10",
                         tooltip="Dijkstra",
                     )
-                ).add_to(m)
+                ).add_to(fg)
             if classical_path and len(classical_path) >= 2:
                 coords_c = [
                     [G.nodes[n]["y"], G.nodes[n]["x"]] for n in classical_path
@@ -3373,7 +3395,7 @@ def main():
                         opacity=0.9 if hybrid_deferred else 0.7,
                         tooltip="Classical FiLM",
                     )
-                ).add_to(m)
+                ).add_to(fg)
 
         # Hybrid path animation (primary).
         if hybrid_deferred:
@@ -3389,10 +3411,10 @@ def main():
                         dash_array="4 10",
                         tooltip="Hybrid (deferred)",
                     )
-                ).add_to(m)
+                ).add_to(fg)
         elif path and len(path) >= 2:
             _draw_hybrid_path_animation(
-                m, G, path, step_trace, step=anim_step
+                fg, G, path, step_trace, step=anim_step
             )
 
         map_data = st_folium(
@@ -3403,6 +3425,7 @@ def main():
             returned_objects=["last_clicked"],
             center=center,
             zoom=zoom,
+            feature_group_to_add=fg,
         )
 
         if map_data and map_data.get("last_clicked"):
