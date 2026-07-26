@@ -375,19 +375,40 @@ def predict_escape_route(
         if len(logits) > MAX_DEGREE:
             logits = logits[:MAX_DEGREE]
 
+        # Always score neighbors via softmax so animation has candidate probs
+        # even when a Dijkstra / geo assist picks the hop.
+        nxt, mode, step_info = _select_ml_neighbor(
+            logits, neighbors, visited, path, env.G, dest, env.origin
+        )
         unvisited = [nb for nb in neighbors if nb not in visited]
-        step_info = None
-        if not unvisited and current != dest:
-            nxt = dijkstra_next_node(env.G, current, dest)
-            if nxt is None or nxt not in neighbors:
-                nxt = _neighbor_toward_dest(
+        if (not unvisited) and current != dest:
+            assist = dijkstra_next_node(env.G, current, dest)
+            if assist is None or assist not in neighbors:
+                assist = _neighbor_toward_dest(
                     env.G, neighbors, current, dest, env.origin
                 )
-            mode = "dijkstra_step"
-        else:
-            nxt, mode, step_info = _select_ml_neighbor(
-                logits, neighbors, visited, path, env.G, dest, env.origin
-            )
+            if assist is not None:
+                nxt = assist
+                mode = "dijkstra_step"
+                # Re-tag chosen flag on the assist neighbor; keep softmax probs.
+                if step_info and step_info.get("candidates"):
+                    for c in step_info["candidates"]:
+                        c["chosen"] = bool(c.get("node") == nxt)
+                    try:
+                        chosen_p = next(
+                            (
+                                float(c["prob"])
+                                for c in step_info["candidates"]
+                                if c.get("chosen") and c.get("prob") is not None
+                            ),
+                            None,
+                        )
+                    except (TypeError, ValueError, StopIteration):
+                        chosen_p = None
+                    step_info["chosen_prob"] = (
+                        round(chosen_p, 6) if chosen_p is not None else None
+                    )
+                    step_info["mode"] = mode
 
         if nxt is None:
             assist_reason = assist_reason or "no_neighbor"
