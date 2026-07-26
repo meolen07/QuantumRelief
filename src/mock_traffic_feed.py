@@ -263,8 +263,8 @@ SCENARIO_CATALOG: Tuple[Dict[str, Any], ...] = (
                 "label": "Flooded corridor · Pasig riverside",
                 "severity": 0.95,
                 "area_hint": "Judge-pinned flood · Pasig side",
-                "corridor_extra": 11,
-                "seed_offset": 17025,
+                "corridor_extra": 14,
+                "seed_offset": 17082,
             },
         ),
     },
@@ -374,7 +374,7 @@ def time_bucket_id(
 
 def _load_judge_flood_params() -> Dict[str, int]:
     """Pinned flood seed from demo_scenarios.json when present."""
-    defaults = {"seed": 17012, "corridor_extra": 11, "near_start": True}
+    defaults = {"seed": 17082, "corridor_extra": 14, "near_start": True}
     path = Path(DEMO_SCENARIOS_PATH)
     if not path.exists():
         return defaults
@@ -392,11 +392,11 @@ def _load_judge_flood_params() -> Dict[str, int]:
     # Scenario-specific overrides from catalog pin table in app / scenarios.
     sid = str(jd.get("scenario_id") or payload.get("default_scenario_id") or "")
     by_id = {
-        "qa_1": {"seed": 17012, "corridor_extra": 11},
-        "qa_2": {"seed": 17025, "corridor_extra": 11},
-        "qa_3": {"seed": 17025, "corridor_extra": 8},
-        "qa_4": {"seed": 17025, "corridor_extra": 8},
-        "qa_5": {"seed": 17025, "corridor_extra": 6},
+        "qa_1": {"seed": 17082, "corridor_extra": 14},
+        "qa_2": {"seed": 16351, "corridor_extra": 11},
+        "qa_3": {"seed": 17092, "corridor_extra": 11},
+        "qa_4": {"seed": 18245, "corridor_extra": 14},
+        "qa_5": {"seed": 16280, "corridor_extra": 8},
     }
     # Prefer per-scenario flood fields from the curated scenario row.
     scenarios = {
