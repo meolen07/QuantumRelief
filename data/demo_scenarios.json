@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-26T10:32:37",
+  "generated_at": "2026-07-26T10:53:06",
   "n_samples": 160,
   "n_hits": 37,
   "top_n": 5,
@@ -7,8 +7,8 @@
   "checkpoint": "models/film_hybrid.pt",
   "classical_checkpoint": "models/film_classical.pt",
   "quantum_contribution_pct": 77.6,
-  "note": "Fixed open scenario: epi + pinned flood + 5 exits on load. User clicks map \u2192 recommend_best_exit \u2192 Find escape route. Captions match live-verified H < C on qa_1 OD when start is near the pinned apartment.",
-  "judge_goal": "Gold star = recommended best evacuate exit; Cyan Hybrid travel strictly below Gold Classical on that exit; other exits visible.",
+  "note": "Fixed open scenario: epi + near-epi broken roads + 5 exits on load. User clicks map \u2192 recommend_best_exit \u2192 Find escape route. Captions match live-verified H < C on qa_1 OD when start is near the pinned apartment.",
+  "judge_goal": "Gold star = recommended best evacuate exit; Cyan Hybrid travel strictly below Gold Classical on that exit; amber broken roads hug red hazard rings.",
   "default_scenario_id": "qa_1",
   "judge_demo": {
     "scenario_id": "qa_1",
@@ -16,20 +16,21 @@
     "corridor_extra": 14,
     "best_exit": 159484095,
     "best_exit_label": "North Gate \u00b7 NW",
-    "live_hybrid_time": 13.295358768415229,
-    "live_classical_time": 24.818300829428267,
-    "live_dijkstra_time": 12.065917145108164,
-    "delta_c_minus_h": 11.522942061013039,
+    "live_hybrid_time": 7.7113723016260165,
+    "live_classical_time": 18.44982256838439,
+    "live_dijkstra_time": 6.202566456843956,
+    "delta_c_minus_h": 10.738450266758374,
     "paths_diverge": true,
-    "note": "Pinned corridor for Hybrid win when user sets start near this OD \u2014 best-ranked North Gate \u00b7 NW \u00b7 live H=13.3 < C=24.8 under flood seed 17082."
+    "note": "Pinned near-epi broken roads for Hybrid win when user sets start near this OD \u2014 best-ranked North Gate \u00b7 NW \u00b7 live H=7.7 < C=18.4 under broken seed 17082.",
+    "broken_seed": 17082
   },
-  "verified_at": "2026-07-26T10:32:37",
+  "verified_at": "2026-07-26T10:53:06",
   "elapsed_sec": 208.4,
   "scenarios": [
     {
       "id": "qa_1",
-      "title": "QA-1: Hybrid 13.3 < Classical 24.8 (\u221211.5)",
-      "blurb": "Best-ranked exit \u00b7 live H=13.3 C=24.8 D=12.1 \u00b7 North Gate \u00b7 NW \u00b7 paths diverge",
+      "title": "QA-1: Hybrid 7.7 < Classical 18.4 (\u221210.7)",
+      "blurb": "Best-ranked exit \u00b7 live H=7.7 C=18.4 D=6.2 \u00b7 North Gate \u00b7 NW \u00b7 paths diverge",
       "start_node": 394290402,
       "dest_node": 159484095,
       "best_exit": 159484095,
@@ -41,20 +42,23 @@
       "exit_lat": 14.5979195,
       "exit_lon": 120.9698686,
       "metrics": {
-        "hybrid_time": 13.295358768415229,
-        "classical_time": 24.818300829428267,
-        "dijkstra_time": 12.065917145108164,
-        "hybrid_overlap_pct": 50.0,
-        "classical_overlap_pct": 48.484848484848484,
+        "hybrid_time": 7.7113723016260165,
+        "classical_time": 18.44982256838439,
+        "dijkstra_time": 6.202566456843956,
+        "hybrid_overlap_pct": 45.833333333333336,
+        "classical_overlap_pct": 50.0,
         "paths_diverge": true,
-        "delta_c_minus_h": 11.522942061013039,
-        "score": 28.04588412202608,
+        "delta_c_minus_h": 10.738450266758374,
+        "score": 25.476900533516748,
         "strict_travel_win": true,
-        "verified_with_flood": true,
+        "verified_with_flood": false,
         "best_exit_match": true,
         "flood_seed": 17082,
         "corridor_extra": 14,
-        "n_flood_edges": 15
+        "n_flood_edges": 15,
+        "verified_with_broken": true,
+        "broken_seed": 17082,
+        "n_broken_edges": 15
       },
       "flood_seed": 17082,
       "corridor_extra": 14,
@@ -63,16 +67,16 @@
           "rank": 1,
           "exit_node": 159484095,
           "label": "North Gate \u00b7 NW",
-          "combined_score": 81.8,
-          "travel_time": 12.065917145108164,
+          "combined_score": 83.1,
+          "travel_time": 6.202566456843956,
           "safety_km": 1.5840714061123462
         },
         {
           "rank": 2,
           "exit_node": 159474601,
           "label": "Fort Santiago / North Gate",
-          "combined_score": 72.6,
-          "travel_time": 9.532173678542758,
+          "combined_score": 72.0,
+          "travel_time": 4.09674071981218,
           "safety_km": 1.3346733655301335
         },
         {
@@ -80,15 +84,15 @@
           "exit_node": 163749365,
           "label": "Maestranza / Bay side",
           "combined_score": 55.0,
-          "travel_time": 7.588679568390338,
+          "travel_time": 1.9886155503315281,
           "safety_km": 1.0096166335682837
         },
         {
           "rank": 4,
           "exit_node": 170828239,
           "label": "Padre Burgos \u00b7 SE",
-          "combined_score": 22.5,
-          "travel_time": 15.926811051242849,
+          "combined_score": 22.0,
+          "travel_time": 10.564796748633825,
           "safety_km": 1.0267347457220943
         },
         {
@@ -96,10 +100,11 @@
           "exit_node": 26498318,
           "label": "East walls / Victoria",
           "combined_score": 4.3,
-          "travel_time": 21.12217598268743,
+          "travel_time": 15.707945718147606,
           "safety_km": 1.064431563958835
         }
-      ]
+      ],
+      "broken_seed": 17082
     },
     {
       "id": "qa_2",
