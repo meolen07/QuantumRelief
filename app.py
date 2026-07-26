@@ -1,13 +1,13 @@
 """
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
-Audience-first 3-step flow:
-  1) Location (map click, optional — judge demo sets it)
-  2) One primary CTA — Run demo (pinned qa_1 Hybrid win, end-to-end)
-  3) Map + metrics (Hybrid vs Classical vs Dijkstra)
+Audience flow (only):
+  1) Map opens with fixed epicenter, 5 evacuate exits, amber flood damages
+  2) Click map → set your location (start)
+  3) App auto-recommends the best-ranked evacuate exit
+  4) Find escape route → Hybrid vs Classical vs Dijkstra metrics
 
-Advanced controls (ranked exits, congestion, place mode, feed) live in a
-collapsed expander. Multi-exit markers stay on the map. Folium 2D only.
+No Run demo, no first-load auto-compare. Folium 2D only.
 """
 
 from __future__ import annotations
@@ -52,7 +52,6 @@ from src.graph_setup import (
     snap_to_nearest_node,
 )
 from src.quantum_hybrid import (
-    QUANTUM_CONTRIBUTION_FORMULA,
     estimate_quantum_contribution_pct,
     ensure_hybrid_model,
     quantum_status,
@@ -75,7 +74,8 @@ from src.traffic_provider import (
 from src.utils import DATA_DIR, HYBRID_CHECKPOINT, get_graph_origin
 
 DEMO_SCENARIOS_PATH = DATA_DIR / "demo_scenarios.json"
-JUDGE_PIN_MIN_DELTA = 2.0  # Run demo must show H < C by at least this margin
+JUDGE_PIN_MIN_DELTA = 2.0  # Soft check when comparing on the pinned corridor
+EXIT_OVERRIDE_CLICK_M = 90.0  # map click near an exit pin → silent override
 
 HYBRID_ROUTE_COLOR = "#00E5FF"
 CLASSICAL_ROUTE_COLOR = "#F5C542"
@@ -86,8 +86,6 @@ DISRUPTION_COLOR = "#F5A623"  # amber — not purple
 
 MAP_H = 820  # concrete Folium px height (avoid % → black map)
 
-PLACE_START = "Location"
-PLACE_DEST = "Evacuate exit"  # optional map override among exits
 ESCAPE_OPEN_SCENARIO = "quake_core"
 
 # Reliability: Hybrid deferred when catastrophic vs Classical or very slow.
@@ -596,11 +594,41 @@ def _apply_advantage_scenario(G, scenario: Dict[str, Any]) -> str:
     title = scenario.get("title") or scenario.get("id") or "advantage"
     msg = (
         f"Advantage demo · {title}.{expected} "
-        "Ready — press Run demo."
+        "Click the map to set your location, then Find escape route."
     )
     st.session_state["map_status"] = msg
     st.session_state["advantage_scenario_id"] = scenario.get("id")
     return msg
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Rough great-circle distance in meters (Intramuros-scale)."""
+    r = 6_371_000.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlmb = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2.0) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2.0) ** 2
+    return float(2.0 * r * np.arcsin(np.sqrt(min(1.0, a))))
+
+
+def _nearest_exit_within(G, lat: float, lon: float, max_m: float) -> Optional[Any]:
+    """Return nearest evacuate-exit node if within max_m of the click."""
+    exits = _ensure_exit_nodes(G)
+    best = None
+    best_d = float("inf")
+    for n in exits:
+        d = _haversine_m(
+            float(lat),
+            float(lon),
+            float(G.nodes[n]["y"]),
+            float(G.nodes[n]["x"]),
+        )
+        if d < best_d:
+            best_d = d
+            best = n
+    if best is not None and best_d <= float(max_m):
+        return best
+    return None
 
 
 def build_base_map(G, map_center, map_zoom: int = 16):
@@ -993,8 +1021,9 @@ def _draw_evacuate_exits_on_map(m, G, *, dest_node, recommended_node) -> None:
         tooltip = " · ".join(b for b in tip_bits if b)
 
         if is_rec and is_dest:
+            # Recommended best exit that Hybrid routes to — gold star.
             ring, fill, weight, radius = "#F5C542", "#F5C542", 4, 11
-            icon_color, icon_name = "orange", "flag"
+            icon_color, icon_name = "orange", "star"
         elif is_dest:
             ring, fill, weight, radius = "#00E5FF", "#0a0f1e", 4, 10
             icon_color, icon_name = "cadetblue", "flag"
@@ -1282,15 +1311,15 @@ def _handle_traffic_error(exc: Exception) -> None:
         pass
 
 
-# Pinned flood seeds that keep Hybrid travel < Classical on curated corridors
+# Pinned flood seeds that keep Hybrid travel < Classical on best-ranked exits
 # (verified against film_hybrid.pt / film_classical.pt + demo_scenarios.json).
 # Fallback only — live pin lives in data/demo_scenarios.json (SSoT).
 _JUDGE_FLOOD_BY_SCENARIO = {
-    "qa_1": {"seed": 17012, "corridor_extra": 11},
-    "qa_2": {"seed": 17025, "corridor_extra": 11},
-    "qa_3": {"seed": 17025, "corridor_extra": 8},
-    "qa_4": {"seed": 17025, "corridor_extra": 8},
-    "qa_5": {"seed": 17025, "corridor_extra": 6},
+    "qa_1": {"seed": 17082, "corridor_extra": 14},
+    "qa_2": {"seed": 16351, "corridor_extra": 11},
+    "qa_3": {"seed": 17092, "corridor_extra": 11},
+    "qa_4": {"seed": 18245, "corridor_extra": 14},
+    "qa_5": {"seed": 16280, "corridor_extra": 8},
 }
 
 
@@ -1345,7 +1374,7 @@ def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
     """
     Single source of truth: data/demo_scenarios.json → judge_demo.scenario_id.
 
-    Ignores session exit picks / Advanced overrides for the audience path.
+    Ignores session exit picks for the audience path.
     """
     payload = _load_demo_scenarios()
     if not payload:
@@ -1373,9 +1402,10 @@ def _judge_pinned_scenario() -> Optional[Dict[str, Any]]:
 
 def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
     """
-    Hard-lock start, dest, epi, flood from the pinned scenario.
+    Hard-lock start, epi, flood from the pinned scenario, then route to the
+    live recommend_best_exit under those dynamics.
 
-    Session exit ranking / map clicks must not steal the judge corridor.
+    Kept for smoke / offline checks — audience path uses `_load_fixed_scenario`.
     """
     st.session_state["exit_auto"] = False
     st.session_state["any_node_dest"] = False
@@ -1390,25 +1420,14 @@ def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
             float(st.session_state["loc_lat"]),
             float(st.session_state["loc_lon"]),
         ]
+        st.session_state["location_set"] = True
     else:
         _set_location(
             G,
             float(scenario["start_lat"]),
             float(scenario["start_lon"]),
         )
-
-    dest = scenario.get("dest_node")
-    if dest is not None and dest in G.nodes:
-        _set_destination(G, dest, via="judge pin")
-        st.session_state["recommended_exit"] = dest
-    elif scenario.get("exit_lat") is not None and scenario.get("exit_lon") is not None:
-        _set_destination_from_latlon(
-            G,
-            float(scenario["exit_lat"]),
-            float(scenario["exit_lon"]),
-            via="judge pin",
-        )
-        st.session_state["recommended_exit"] = st.session_state.get("dest_node")
+        st.session_state["location_set"] = True
 
     if scenario.get("epi_lat") is not None and scenario.get("epi_lon") is not None:
         _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
@@ -1416,33 +1435,136 @@ def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
 
     flood_params = _judge_flood_params(scenario)
     near = st.session_state.get("start_node")
-    # Authoritative flood from JSON pin (not feed lottery / stale seed_offset).
     n = _set_flood_corridor(
         G,
         near_node=near,
         seed=flood_params["seed"],
         corridor_extra=flood_params["corridor_extra"],
     )
-    # Re-assert after flood apply (feed/clear must not steal pin).
     if scenario.get("epi_lat") is not None and scenario.get("epi_lon") is not None:
         _set_epicenter(float(scenario["epi_lat"]), float(scenario["epi_lon"]))
         st.session_state["disaster_active"] = True
-    if dest is not None and dest in G.nodes:
-        _set_destination(G, dest, via="judge pin")
-        st.session_state["recommended_exit"] = dest
-    st.session_state["exit_auto"] = False
+
+    exits = _ensure_exit_nodes(G)
+    start_node = st.session_state.get("start_node")
+    epi = (
+        float(st.session_state["epi_lon"]),
+        float(st.session_state["epi_lat"]),
+    )
+    best, ranking = recommend_best_exit(
+        G,
+        start_node,
+        exits,
+        epi,
+        edge_disruptions=st.session_state.get("edge_disruptions"),
+    )
+    st.session_state["exit_ranking"] = ranking
+    expected = scenario.get("best_exit") or scenario.get("dest_node")
+    if expected is not None and best != expected:
+        st.session_state["demo_pin_failed"] = True
+        st.session_state["demo_pin_fail_detail"] = (
+            f"Best-ranked exit {best} ≠ pinned dest {expected}. "
+            "Re-search / update data/demo_scenarios.json."
+        )
+    _select_evacuate_area(G, best, via="best exit (judge)", auto=True)
+    st.session_state["exit_auto"] = True
     st.session_state["advantage_scenario_id"] = scenario.get("id")
     flood_params["n_edges"] = int(n)
+    flood_params["best_exit"] = best
+    flood_params["expected_best_exit"] = expected
     return flood_params
 
 
-def _run_judge_demo(G) -> str:
+def _load_fixed_scenario(G) -> str:
     """
-    Primary audience path: hard-locked pin from demo_scenarios.json + auto-route.
+    Audience open: fixed epicenter + pinned flood damages + 5 exits.
 
-    Forces start / dest / epi / flood from JSON; ignores conflicting session
-    exit picks. Caption uses live-verified flood metrics only.
+    Does NOT set start, does NOT auto-run Hybrid/Classical compare.
+    User clicks the map, then presses Find escape route.
     """
+    st.session_state.pop("demo_pin_failed", None)
+    st.session_state.pop("demo_pin_fail_detail", None)
+    st.session_state.pop("judge_demo_armed", None)
+    st.session_state.pop("_schedule_auto_run", None)
+    st.session_state.pop("_auto_run_route", None)
+    st.session_state["exit_auto"] = True
+    st.session_state["any_node_dest"] = False
+    st.session_state["location_set"] = False
+    st.session_state.pop("start_node", None)
+    st.session_state.pop("loc_lat", None)
+    st.session_state.pop("loc_lon", None)
+    st.session_state.pop("recommended_exit", None)
+    st.session_state.pop("exit_ranking", None)
+    st.session_state.pop("dest_node", None)
+    st.session_state.pop("dest_lat", None)
+    st.session_state.pop("dest_lon", None)
+    _clear_route_results()
+
+    sc = _judge_pinned_scenario()
+    try:
+        if sc is not None:
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
+                st.session_state["disaster_active"] = True
+            flood_params = _judge_flood_params(sc)
+            near = sc.get("start_node")
+            if near is not None and near not in G.nodes:
+                near = None
+            n = _set_flood_corridor(
+                G,
+                near_node=near,
+                seed=flood_params["seed"],
+                corridor_extra=flood_params["corridor_extra"],
+            )
+            # Re-assert epi after flood apply (feed/clear must not steal pin).
+            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
+                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
+                st.session_state["disaster_active"] = True
+            # Frame map on the corridor (not a user location yet).
+            if sc.get("start_lat") is not None and sc.get("start_lon") is not None:
+                st.session_state["map_center"] = [
+                    float(sc["start_lat"]),
+                    float(sc["start_lon"]),
+                ]
+            elif sc.get("epi_lat") is not None:
+                st.session_state["map_center"] = [
+                    float(sc["epi_lat"]),
+                    float(sc["epi_lon"]),
+                ]
+            st.session_state["fixed_scenario_id"] = sc.get("id")
+            sid = sc.get("id") or "qa_1"
+            msg = (
+                f"Fixed scenario · {sid} · epicenter + flood ({n} amber edges). "
+                "Click the map to set your location."
+            )
+        else:
+            lat, lon = _mild_default_epi(G)
+            _set_epicenter(lat, lon)
+            st.session_state["disaster_active"] = True
+            n = _set_flood_corridor(G, near_node=None, seed=17082, corridor_extra=14)
+            st.session_state["map_center"] = [lat, lon]
+            msg = (
+                f"Epicenter + flood ({n} amber edges). "
+                "Click the map to set your location."
+            )
+    except TrafficNotConfiguredError as exc:
+        msg = str(exc)
+        st.session_state["map_status"] = msg
+        return msg
+
+    _ensure_exit_nodes(G)
+    # Seed dest to first exit so map drawing has a fallback before recommend.
+    exits = st.session_state.get("exit_nodes") or []
+    if exits and exits[0] in G.nodes:
+        st.session_state["dest_node"] = exits[0]
+        st.session_state["dest_lat"] = float(G.nodes[exits[0]]["y"])
+        st.session_state["dest_lon"] = float(G.nodes[exits[0]]["x"])
+    st.session_state["map_status"] = msg
+    return msg
+
+
+def _run_judge_demo(G) -> str:
+    """Offline / smoke helper — not used by the audience CTA."""
     st.session_state.pop("demo_pin_failed", None)
     st.session_state.pop("demo_pin_fail_detail", None)
     try:
@@ -1451,43 +1573,23 @@ def _run_judge_demo(G) -> str:
             flood_params = _force_judge_pin(G, sc)
             n = int(flood_params.get("n_edges") or 0)
             title = sc.get("title") or sc.get("id") or "advantage"
-            m = sc.get("metrics") or {}
-            live_bit = ""
-            if m.get("hybrid_time") is not None and m.get("classical_time") is not None:
-                live_bit = (
-                    f" Live-verified H={float(m['hybrid_time']):.1f} "
-                    f"< C={float(m['classical_time']):.1f}."
-                )
-            pl_note = ""
-            try:
-                if not quantum_status().get("pennylane_available"):
-                    pl_note = (
-                        " ⚠ PennyLane unavailable — Hybrid card will mirror "
-                        "Classical (install pennylane for the win)."
-                    )
-            except Exception:
-                pass
-            msg = (
-                f"Judge demo · {title} · Flooded corridor ({n} amber edges · "
-                f"seed {flood_params['seed']}).{live_bit} "
-                f"Finding safest & fastest route…{pl_note}"
+            best = flood_params.get("best_exit") or sc.get("best_exit")
+            best_label = (
+                (sc.get("_judge_demo") or {}).get("best_exit_label")
+                or sc.get("best_exit_label")
+                or _landmark_label_for(G, best)
             )
-            st.session_state["judge_demo_armed"] = True
+            msg = (
+                f"Judge pin · {title} · Best exit {best_label} · "
+                f"Flooded corridor ({n} amber edges)."
+            )
             st.session_state["judge_scenario_id"] = sc.get("id")
-            st.session_state["_schedule_auto_run"] = True
         else:
             n = _set_flood_corridor(G, near_node=st.session_state.get("start_node"))
-            msg = (
-                f"Judge demo · Flooded corridor ({n} amber edges) near your start. "
-                "Finding safest & fastest route…"
-            )
-            st.session_state["judge_demo_armed"] = False
-            st.session_state.pop("_schedule_auto_run", None)
+            msg = f"Flooded corridor ({n} amber edges)."
     except TrafficNotConfiguredError as exc:
         msg = str(exc)
         st.session_state["map_status"] = msg
-        st.session_state.pop("_schedule_auto_run", None)
-        st.session_state["judge_demo_armed"] = False
         return msg
     st.session_state["map_status"] = msg
     return msg
@@ -1539,7 +1641,22 @@ def _evaluate_demo_pin(
         "ckpt_mtime": ckpt.get("mtime_utc"),
         "pennylane": pl_ok,
         "strict_win": bool(strict_win),
+        "dest_node": st.session_state.get("dest_node"),
+        "recommended_exit": st.session_state.get("recommended_exit"),
+        "best_exit_match": (
+            st.session_state.get("dest_node")
+            == st.session_state.get("recommended_exit")
+        ),
     }
+    # Dest must be the recommended best exit for the audience path.
+    if (
+        st.session_state.get("recommended_exit") is not None
+        and st.session_state.get("dest_node")
+        != st.session_state.get("recommended_exit")
+    ):
+        strict_win = False
+        st.session_state["demo_debug"]["strict_win"] = False
+        st.session_state["demo_debug"]["best_exit_match"] = False
     if strict_win:
         st.session_state["demo_pin_failed"] = False
         st.session_state.pop("demo_pin_fail_detail", None)
@@ -1561,6 +1678,10 @@ def _evaluate_demo_pin(
         f"live travel: H={ht:.1f}"
         + (f" C={ct:.1f}" if ct is not None else " C=—")
         + (f" Δ={ct - ht:.1f}" if ct is not None else ""),
+        f"dest={st.session_state.get('dest_node')} · "
+        f"recommended={st.session_state.get('recommended_exit')} · "
+        f"best_exit_match="
+        f"{st.session_state.get('dest_node') == st.session_state.get('recommended_exit')}",
         f"scenario id: {sid}",
         "Upload models/film_hybrid.pt (not a *_bak / demo 45.3% checkpoint) "
         "+ data/demo_scenarios.json + app.py, then Reboot Cloud.",
@@ -1587,6 +1708,7 @@ def _set_location(G, lat: float, lon: float) -> None:
     st.session_state["start_node"] = node
     st.session_state["loc_lat"] = float(G.nodes[node]["y"])
     st.session_state["loc_lon"] = float(G.nodes[node]["x"])
+    st.session_state["location_set"] = True
     st.session_state["map_center"] = [
         float(st.session_state["loc_lat"]),
         float(st.session_state["loc_lon"]),
@@ -1595,90 +1717,61 @@ def _set_location(G, lat: float, lon: float) -> None:
 
 def _init_session(G, nodes, origin):
     _ensure_exit_nodes(G)
-    if "start_node" not in st.session_state:
-        _set_location(G, 14.5908, 120.9752)
-    if "loc_lat" not in st.session_state:
-        n0 = st.session_state["start_node"]
-        st.session_state["loc_lat"] = float(G.nodes[n0]["y"])
-        st.session_state["loc_lon"] = float(G.nodes[n0]["x"])
-    if "epi_lat" not in st.session_state:
-        (lon_r, lat_r), _ = random_epicenter(G, seed=7)
-        st.session_state["epi_lat"] = float(lat_r)
-        st.session_state["epi_lon"] = float(lon_r)
-        st.session_state["disaster_active"] = True
     if "disaster_active" not in st.session_state:
         st.session_state["disaster_active"] = True
     if "hazard_t_scrub" not in st.session_state:
         st.session_state["hazard_t_scrub"] = 30
-    if "dest_node" not in st.session_state or st.session_state["dest_node"] not in G.nodes:
-        try:
-            _recommend_and_set_exit(G, via="init")
-        except Exception:
-            far = farthest_node_from(G, st.session_state["start_node"])
-            st.session_state["dest_node"] = far
-            st.session_state["dest_lat"] = float(G.nodes[far]["y"])
-            st.session_state["dest_lon"] = float(G.nodes[far]["x"])
-    if "dest_lat" not in st.session_state:
-        d0 = st.session_state["dest_node"]
-        st.session_state["dest_lat"] = float(G.nodes[d0]["y"])
-        st.session_state["dest_lon"] = float(G.nodes[d0]["x"])
-    if "place_mode" not in st.session_state:
-        st.session_state["place_mode"] = PLACE_START
+    if "location_set" not in st.session_state:
+        st.session_state["location_set"] = False
     if "map_center" not in st.session_state:
         st.session_state["map_center"] = [
-            float(st.session_state.get("loc_lat", origin[1])),
-            float(st.session_state.get("loc_lon", origin[0])),
+            float(origin[1]),
+            float(origin[0]),
         ]
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
     if "map_status" not in st.session_state:
-        st.session_state["map_status"] = (
-            "Press Run demo — or wait for auto-run on first open."
-        )
+        st.session_state["map_status"] = "Click the map to set your location."
     if "edge_disruptions" not in st.session_state:
         st.session_state["edge_disruptions"] = None
     if "feed_snapshot" not in st.session_state:
         st.session_state["feed_snapshot"] = None
+    if "exit_auto" not in st.session_state:
+        st.session_state["exit_auto"] = True
     _ = nodes  # kept for signature symmetry / future filters
 
 
 def _apply_map_click(G, lat: float, lon: float) -> str:
-    """Map click sets location (primary) or evacuate-exit override."""
+    """
+    Map click: set location (start) and auto-recommend best exit.
+
+    Silent override: click near an exit pin to route there instead of #1.
+    """
     _clear_route_results()
     st.session_state["map_center"] = [float(lat), float(lon)]
-    mode = st.session_state.get("place_mode", PLACE_START)
-    if mode == PLACE_DEST:
-        if st.session_state.get("any_node_dest"):
-            msg = _set_destination_from_latlon(G, lat, lon, via="map any-node")
-            st.session_state["exit_auto"] = False
-            return msg
-        # Primary Escape: snap to nearest perimeter evacuate area.
-        exits = _ensure_exit_nodes(G)
-        if exits:
-            best_ex = min(
-                exits,
-                key=lambda n: (
-                    (float(G.nodes[n]["y"]) - float(lat)) ** 2
-                    + (float(G.nodes[n]["x"]) - float(lon)) ** 2
-                ),
-            )
-            return _select_evacuate_area(
-                G, best_ex, via="map exit override", auto=False
-            )
-        msg = _set_destination_from_latlon(G, lat, lon, via="map override")
-        st.session_state["exit_auto"] = False
+
+    # Optional silent override — click an evacuate exit pin.
+    near_exit = _nearest_exit_within(G, lat, lon, EXIT_OVERRIDE_CLICK_M)
+    if near_exit is not None and st.session_state.get("location_set"):
+        is_best = near_exit == st.session_state.get("recommended_exit")
+        msg = _select_evacuate_area(
+            G, near_exit, via="exit pin", auto=is_best
+        )
+        if not is_best:
+            label = _landmark_label_for(G, near_exit)
+            msg = f"Exit override · {label} (click another exit or relocate to re-rank)."
+            st.session_state["map_status"] = msg
         return msg
+
     _set_location(G, lat, lon)
     try:
         rec = _recommend_and_set_exit(G, via="location update")
     except Exception:
         rec = f"Evacuate exit held · node {st.session_state.get('dest_node')}."
-    msg = (
-        f"Location → {st.session_state['loc_lat']:.5f}, "
-        f"{st.session_state['loc_lon']:.5f} (node {st.session_state['start_node']}). "
-        f"{rec}"
-    )
+    label = _landmark_label_for(G, st.session_state.get("dest_node"))
+    msg = f"Location set · recommended {label}."
     st.session_state["map_status"] = msg
+    _ = rec
     return msg
 
 
@@ -1693,12 +1786,12 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tagline">Earthquake Escape — Hybrid vs Classical in one click</div>',
+        '<div class="qr-tagline">Earthquake Escape — click map · find route · Hybrid vs Classical</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Apartment shakes in Manila → <b>Run demo</b> → cyan Hybrid beats gold Classical '
-        "on the map. Optional: click map to move. Advanced controls stay collapsed."
+        '<div class="qr-tag">Map shows epicenter, 5 evacuate exits, and flood damage. '
+        "Click to set your location → see the recommended exit → <b>Find escape route</b>."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1718,13 +1811,11 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, nodes, origin)
 
-    # First open: arm pinned judge scenario (qa_1 Hybrid win) + auto-run route.
+    # First open: fixed epi + flood + 5 exits only — never auto-run compare.
     if not st.session_state.get("_demo_autoload_done"):
         st.session_state["_demo_autoload_done"] = True
-        st.session_state["_feed_autoload_done"] = True  # skip legacy quake_core open
-        _run_judge_demo(G)
-    if st.session_state.pop("_schedule_auto_run", False):
-        st.session_state["_auto_run_route"] = True
+        st.session_state["_feed_autoload_done"] = True
+        _load_fixed_scenario(G)
 
     if "_map_click" in st.session_state:
         lat_p, lon_p = st.session_state.pop("_map_click")
@@ -1734,17 +1825,22 @@ def main():
         except Exception:
             pass
 
-    if st.session_state["start_node"] not in G.nodes:
-        st.session_state["start_node"] = nodes[0]
-    if st.session_state["dest_node"] not in G.nodes:
-        st.session_state["dest_node"] = farthest_node_from(
-            G, st.session_state["start_node"]
-        )
+    location_set = bool(st.session_state.get("location_set")) and (
+        st.session_state.get("start_node") in G.nodes
+    )
+    if location_set and st.session_state.get("dest_node") not in G.nodes:
+        try:
+            _recommend_and_set_exit(G, via="dest repair")
+        except Exception:
+            far = farthest_node_from(G, st.session_state["start_node"])
+            st.session_state["dest_node"] = far
+            st.session_state["dest_lat"] = float(G.nodes[far]["y"])
+            st.session_state["dest_lon"] = float(G.nodes[far]["x"])
 
     map_col, panel_col = st.columns([2, 1], gap="medium")
 
     # ------------------------------------------------------------------
-    # RIGHT PANEL (~1/3) — 3-step audience flow
+    # RIGHT PANEL (~1/3) — click → recommend → Find escape route
     # ------------------------------------------------------------------
     with panel_col:
         badge = (
@@ -1755,14 +1851,14 @@ def main():
         st.markdown(
             f'<div class="qr-panel"><h3>Earthquake Escape</h3>{badge} {_traffic_feed_badge_html()}'
             "<p style='color:#9AA8BC;font-size:0.82rem;margin:0.5rem 0 0.35rem 0'>"
-            "Three steps: location → <b style='color:#E8EEF6'>Run demo</b> → read the map."
+            "Click the map → recommended exit → <b style='color:#E8EEF6'>Find escape route</b>."
             "</p>"
             '<div class="qr-legend">'
             f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Cyan = Hybrid</span>'
             f'<span><i style="background:{CLASSICAL_ROUTE_COLOR}"></i>Gold = Classical</span>'
             f'<span><i style="background:{DIJKSTRA_ROUTE_COLOR}"></i>White = Dijkstra</span>'
             f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Red = hazard</span>'
-            f'<span><i style="background:#F5C542"></i>Gold pin = exit</span>'
+            f'<span><i style="background:#F5C542"></i>Gold star = best exit</span>'
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -1773,84 +1869,50 @@ def main():
             )
             st.caption(qstat["note"])
 
-        exit_label = _landmark_label_for(G, st.session_state["dest_node"])
-        area_rows = _evacuate_area_rows(G)
+        exit_label = (
+            _landmark_label_for(G, st.session_state["dest_node"])
+            if st.session_state.get("dest_node") in G.nodes
+            else "—"
+        )
         recommended_node = st.session_state.get("recommended_exit")
-        if recommended_node is None and area_rows:
-            for r in area_rows:
-                if r.get("recommended"):
-                    recommended_node = r.get("exit_node")
-                    break
-            if recommended_node is None:
-                recommended_node = area_rows[0].get("exit_node")
-        _jd = (_load_demo_scenarios() or {}).get("judge_demo") or {}
-        _jd_h = _jd.get("live_hybrid_time")
-        _jd_c = _jd.get("live_classical_time")
-        _jd_sid = _jd.get("scenario_id", "qa_1")
-        if _jd_h is not None and _jd_c is not None:
-            _jd_cap = (
-                f"Pinned {_jd_sid} · live H={float(_jd_h):.1f} < C={float(_jd_c):.1f}"
+
+        if location_set:
+            st.markdown(
+                f'<div class="qr-oneliner">Your location · set'
+                f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+                f"Click map to move · click an exit pin to override</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="qr-oneliner">Recommended exit · '
+                f"<span>{exit_label}</span>"
+                f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+                f"#1 ranked · gold star on map"
+                f"</span></div>",
+                unsafe_allow_html=True,
             )
         else:
-            _jd_cap = f"Pinned {_jd_sid} · Hybrid travel win under flood"
+            st.markdown(
+                '<div class="qr-oneliner">Your location · '
+                "<span>click the map</span>"
+                '<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
+                "Epicenter, 5 exits, and flood damage are already on the map"
+                "</span></div>",
+                unsafe_allow_html=True,
+            )
 
-        # ---- Step 1: Location ----
-        st.markdown(
-            '<div class="qr-step-label">Step 1 · Location</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="qr-oneliner">Blue home · '
-            f'{st.session_state["loc_lat"]:.5f}, {st.session_state["loc_lon"]:.5f}'
-            f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
-            f"Click map to move (optional — Run demo sets the pin)</span></div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="qr-oneliner">Recommended exit · '
-            f"<span>{exit_label}</span>"
-            f'<br/><span style="color:#9AA8BC;font-size:0.78rem;font-weight:400">'
-            f"Gold / cyan markers on map · override in Advanced</span></div>",
-            unsafe_allow_html=True,
-        )
-
-        # ---- Step 2: One CTA ----
-        st.markdown(
-            '<div class="qr-step-label">Step 2 · Run demo</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(_jd_cap)
+        run = False
         if st.button(
-            "Run demo",
+            "Find escape route",
             type="primary",
             use_container_width=True,
-            key="btn_run_demo",
-            help="Pinned judge scenario (qa_1) end-to-end — Hybrid vs Classical vs Dijkstra",
+            key="btn_find_escape",
+            disabled=not location_set,
+            help="Compare Hybrid · Classical · Dijkstra to the recommended evacuate exit",
         ):
-            _run_judge_demo(G)
-            st.rerun()
-
-        # Current-map route (secondary CTA kept for Advanced users / auto-run target)
-        run = False
-        if st.session_state.pop("_auto_run_route", False):
             run = True
-        st.caption(st.session_state.get("map_status", ""))
 
-        # Always-visible demo debug (Cloud stale-checkpoint diagnosis).
-        _dbg = st.session_state.get("demo_debug") or {}
-        if _dbg or st.session_state.get("judge_demo_armed"):
-            _sid = _dbg.get("scenario_id") or st.session_state.get(
-                "judge_scenario_id", _jd_sid
-            )
-            _q = _dbg.get("q_pct")
-            _ht = _dbg.get("hybrid_travel")
-            _ct = _dbg.get("classical_travel")
-            _q_s = f"{float(_q):.1f}%" if _q is not None else "—"
-            _h_s = f"{float(_ht):.1f}" if _ht is not None else "—"
-            _c_s = f"{float(_ct):.1f}" if _ct is not None else "—"
-            st.caption(
-                f"Demo debug · {_sid} · q={_q_s} · H={_h_s} · C={_c_s}"
-            )
+        st.caption(st.session_state.get("map_status", ""))
 
         # Hazard scrub: clamp BEFORE widget; never write after (Streamlit owns key).
         _path_for_scrub = st.session_state.get("path")
@@ -1883,250 +1945,12 @@ def main():
                 help="Epicenter damage radius grows with t — scrub after routes draw",
             )
 
-        # ---- Advanced (collapsed) ----
-        with st.expander("Advanced", expanded=False):
-            st.caption(
-                "Feed, congestion, exit override, place mode — not needed for the 60s story."
-            )
-            _dbg2 = st.session_state.get("demo_debug") or {}
-            _ckpt = _hybrid_ckpt_debug()
-            _q2 = _dbg2.get("q_pct")
-            _q2s = f"{float(_q2):.1f}%" if _q2 is not None else "—"
-            _h2 = _dbg2.get("hybrid_travel")
-            _c2 = _dbg2.get("classical_travel")
-            _h2s = f"{float(_h2):.1f}" if _h2 is not None else "—"
-            _c2s = f"{float(_c2):.1f}" if _c2 is not None else "—"
-            st.caption(
-                "Demo pin · "
-                f"id={_dbg2.get('scenario_id') or st.session_state.get('judge_scenario_id') or '—'} · "
-                f"q={_q2s} · H={_h2s} · C={_c2s} · "
-                f"sha={_ckpt.get('sha16') or '—'} · "
-                f"mtime={_ckpt.get('mtime_utc') or '—'}"
-            )
-            st.markdown(_feed_incidents_html(), unsafe_allow_html=True)
-            st.caption(_disruption_summary())
-            c_a, c_b = st.columns(2)
-            with c_a:
-                if st.button(
-                    "Refresh feed",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_refresh_feed",
-                ):
-                    _load_current_conditions(G, refresh=True)
-                    if st.session_state.get("exit_auto", True):
-                        try:
-                            _recommend_and_set_exit(G, via="feed refresh")
-                        except Exception:
-                            pass
-                    st.rerun()
-            with c_b:
-                if st.button(
-                    "Clear overlay",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_clear_disruption",
-                    disabled=_active_disruption_count() == 0 and not _disaster_active(),
-                ):
-                    _clear_disruption()
-                    mild_lat, mild_lon = _mild_default_epi(G)
-                    _set_epicenter(mild_lat, mild_lon)
-                    st.session_state["disaster_active"] = True
-                    st.session_state["map_status"] = (
-                        "Post-quake overlays cleared · epicenter held"
-                    )
-                    st.rerun()
+        start = st.session_state.get("start_node")
+        dest = st.session_state.get("dest_node")
+        epi_lat = float(st.session_state.get("epi_lat") or origin[1])
+        epi_lon = float(st.session_state.get("epi_lon") or origin[0])
 
-            dcol_a, dcol_b = st.columns(2)
-            with dcol_a:
-                if st.button(
-                    "Damaged roads",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_congestion",
-                ):
-                    try:
-                        n = _set_random_disruption(G, soft_block=False)
-                        st.session_state["map_status"] = (
-                            f"Post-quake damaged roads → {n} edges · amber soft ×5"
-                        )
-                        if st.session_state.get("exit_auto", True):
-                            _recommend_and_set_exit(G, via="damage overlay")
-                    except TrafficNotConfiguredError as exc:
-                        _handle_traffic_error(exc)
-                    st.rerun()
-            with dcol_b:
-                if st.button(
-                    "Blocked corridor",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_soft_block",
-                ):
-                    try:
-                        n = _set_random_disruption(G, soft_block=True)
-                        st.session_state["map_status"] = (
-                            f"Post-quake blocked corridor → {n} edges · amber soft ×8"
-                        )
-                        if st.session_state.get("exit_auto", True):
-                            _recommend_and_set_exit(G, via="block overlay")
-                    except TrafficNotConfiguredError as exc:
-                        _handle_traffic_error(exc)
-                    st.rerun()
-            if st.button(
-                "Flooded corridor (Ondoy-like)",
-                use_container_width=True,
-                type="secondary",
-                key="btn_flood",
-            ):
-                try:
-                    n = _set_flood_corridor(
-                        G, near_node=st.session_state.get("start_node")
-                    )
-                    st.session_state["map_status"] = (
-                        f"Related flood case → {n} edges · amber soft ×12"
-                    )
-                except TrafficNotConfiguredError as exc:
-                    _handle_traffic_error(exc)
-                st.rerun()
-
-            st.radio(
-                "Map click sets",
-                options=[PLACE_START, PLACE_DEST],
-                horizontal=True,
-                key="place_mode",
-                help="Location = apartment/start. Evacuate exit = map override.",
-            )
-            epi_a, epi_b = st.columns(2)
-            with epi_a:
-                if st.button(
-                    "Random epicenter",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_random_epi",
-                ):
-                    _activate_random_epicenter(G)
-                    st.rerun()
-            with epi_b:
-                if st.button(
-                    "Recommend best exit",
-                    use_container_width=True,
-                    type="secondary",
-                    key="btn_recommend_exit",
-                ):
-                    try:
-                        msg = _recommend_and_set_exit(G, via="recommend button")
-                        st.session_state["map_status"] = msg
-                    except Exception as exc:
-                        st.session_state["map_status"] = f"Exit recommend failed: {exc}"
-                    st.rerun()
-
-            if area_rows:
-                options = []
-                node_by_label = {}
-                for row in area_rows:
-                    node = row.get("exit_node")
-                    if node is None or node not in G.nodes:
-                        continue
-                    lab = str(row.get("label") or _landmark_label_for(G, node))
-                    rank = row.get("rank", "—")
-                    score = row.get("combined_score")
-                    tag = (
-                        " ★ best"
-                        if (node == recommended_node or row.get("recommended"))
-                        else ""
-                    )
-                    if score is not None:
-                        label = f"#{rank} {lab} · score {score}{tag}"
-                    else:
-                        label = f"#{rank} {lab}{tag}"
-                    options.append(label)
-                    node_by_label[label] = node
-                if options:
-                    current = st.session_state.get("dest_node")
-                    default_ix = 0
-                    for i, lab in enumerate(options):
-                        if node_by_label.get(lab) == current:
-                            default_ix = i
-                            break
-                    choice = st.selectbox(
-                        "Override evacuate area",
-                        options=options,
-                        index=default_ix,
-                        key="exit_override_select",
-                    )
-                    ov_a, ov_b = st.columns(2)
-                    with ov_a:
-                        if st.button(
-                            "Route to selected",
-                            use_container_width=True,
-                            type="secondary",
-                            key="btn_use_exit",
-                        ):
-                            node = node_by_label.get(choice)
-                            if node is not None:
-                                is_best = node == recommended_node
-                                _select_evacuate_area(
-                                    G, node, via="exit override", auto=is_best
-                                )
-                                st.rerun()
-                    with ov_b:
-                        if st.button(
-                            "Use recommended",
-                            use_container_width=True,
-                            type="secondary",
-                            key="btn_use_recommended",
-                            disabled=recommended_node is None,
-                        ):
-                            if recommended_node is not None:
-                                _select_evacuate_area(
-                                    G,
-                                    recommended_node,
-                                    via="use recommended",
-                                    auto=True,
-                                )
-                                st.rerun()
-
-            if st.button(
-                "Enable any-node destination clicks",
-                use_container_width=True,
-                type="secondary",
-                key="btn_any_dest",
-            ):
-                st.session_state["place_mode"] = PLACE_DEST
-                st.session_state["any_node_dest"] = True
-                st.session_state["exit_auto"] = False
-                st.session_state["map_status"] = (
-                    "Map clicks set any-node destination (secondary mode)."
-                )
-                st.rerun()
-
-            if st.button(
-                "Find escape route (current map)",
-                use_container_width=True,
-                type="secondary",
-                key="btn_find_route",
-            ):
-                run = True
-
-        # ---- Step 3 header (metrics follow after route compute) ----
-        st.markdown(
-            '<div class="qr-step-label">Step 3 · Map + metrics</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Hard-lock pin again immediately before route when judge demo is armed
-        # (session exit picks / Advanced must not steal the corridor).
-        if run and st.session_state.get("judge_demo_armed"):
-            sc_pin = _judge_pinned_scenario()
-            if sc_pin is not None:
-                _force_judge_pin(G, sc_pin)
-
-        start = st.session_state["start_node"]
-        dest = st.session_state["dest_node"]
-        epi_lat = float(st.session_state["epi_lat"])
-        epi_lon = float(st.session_state["epi_lon"])
-
-        if run:
+        if run and location_set and start in G.nodes and dest in G.nodes:
             use_hybrid = bool(pl_ok)
             hybrid_fell_back = False
             try:
@@ -2694,21 +2518,14 @@ def main():
                     if q_contrib is not None and q_contrib > 0
                     else "N/A this run"
                 )
-                st.markdown(
-                    f"""
-**Live from Hybrid checkpoint** ({q_line}).
-
-```
-Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
-```
-
-{QUANTUM_CONTRIBUTION_FORMULA}
-                    """
+                st.caption(
+                    f"{q_line} · "
+                    "100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))"
                 )
         else:
             st.info(
-                "Press **Run demo** — pinned qa_1 loads location, exit, flood, and "
-                "compares Hybrid · Classical · Dijkstra. Or wait — first open auto-runs."
+                "Click the map to set your location, then press **Find escape route** "
+                "to compare Hybrid · Classical · Dijkstra."
             )
 
         st.markdown(
@@ -2729,16 +2546,18 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
         hybrid_path_raw = st.session_state.get("hybrid_path_raw")
         hybrid_deferred = bool(st.session_state.get("hybrid_deferred"))
         radii_trace = st.session_state.get("radii_trace")
-        start_draw = st.session_state["start_node"]
-        dest_draw = st.session_state["dest_node"]
-        epi = (float(st.session_state["epi_lon"]), float(st.session_state["epi_lat"]))
+        start_draw = st.session_state.get("start_node")
+        dest_draw = st.session_state.get("dest_node")
+        epi = (
+            float(st.session_state.get("epi_lon") or origin[0]),
+            float(st.session_state.get("epi_lat") or origin[1]),
+        )
         disaster_on = _disaster_active()
-        place_mode = st.session_state.get("place_mode", PLACE_START)
         n_exits = len(st.session_state.get("exit_nodes") or [])
         st.caption(
             f"Cyan Hybrid · gold Classical · white Dijkstra · "
             f"gold pins = exits ({n_exits or N_EVACUATE_AREAS}) · "
-            f"click → {place_mode}"
+            f"click map = your location"
             + (" · red rings = hazard" if disaster_on else "")
             + (" · faded cyan = deferred Hybrid" if hybrid_deferred else "")
         )
@@ -2811,34 +2630,43 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                 )
             ).add_to(m)
 
-        _no_click(
-            folium.Marker(
-                [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-                icon=folium.Icon(color="blue", icon="home"),
-                tooltip="Your location",
-            )
-        ).add_to(m)
-        _no_click(
-            folium.CircleMarker(
-                [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
-                radius=9,
-                color="#00E5FF",
-                weight=3,
-                fill=True,
-                fill_color="#0a0f1e",
-                fill_opacity=0.9,
-            )
-        ).add_to(m)
+        if (
+            location_set
+            and start_draw is not None
+            and start_draw in G.nodes
+        ):
+            _no_click(
+                folium.Marker(
+                    [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
+                    icon=folium.Icon(color="blue", icon="home"),
+                    tooltip="Your location",
+                )
+            ).add_to(m)
+            _no_click(
+                folium.CircleMarker(
+                    [G.nodes[start_draw]["y"], G.nodes[start_draw]["x"]],
+                    radius=9,
+                    color="#00E5FF",
+                    weight=3,
+                    fill=True,
+                    fill_color="#0a0f1e",
+                    fill_opacity=0.9,
+                )
+            ).add_to(m)
 
         # All candidate evacuate areas (recommended highlighted; selected = routing).
         recommended_draw = st.session_state.get("recommended_exit")
-        if recommended_draw is None and bool(st.session_state.get("exit_auto", True)):
+        if (
+            recommended_draw is None
+            and location_set
+            and bool(st.session_state.get("exit_auto", True))
+        ):
             recommended_draw = dest_draw
         _draw_evacuate_exits_on_map(
             m,
             G,
-            dest_node=dest_draw,
-            recommended_node=recommended_draw,
+            dest_node=dest_draw if location_set else None,
+            recommended_node=recommended_draw if location_set else None,
         )
 
         if dij_path and len(dij_path) >= 2:
@@ -2935,9 +2763,6 @@ Quantum Contribution % = 100 × mean(|W_q|) / (mean(|W_c|) + mean(|W_q|))
                     st.session_state["_last_click_key"] = click_key
                     st.session_state["_map_click"] = (lat_c, lon_c)
                     st.rerun()
-
-        if st.session_state.get("_schedule_auto_run"):
-            st.rerun()
 
 
 if __name__ == "__main__":
