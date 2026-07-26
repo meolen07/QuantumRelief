@@ -2,13 +2,13 @@
 QuantumRelief — Earthquake Escape Route (Streamlit).
 
 Audience flow (only):
-  1) Map opens with fault line → epicenter → amber broken roads near epi + 5 exits
-  2) Click map → set your location (clear blue start dot)
+  1) Map opens with distant fault line → epicenter + 5 exits (no broken roads)
+  2) Click map → set your location (blue start)
   3) App auto-recommends the best-ranked evacuate exit
-  4) Find escape route → Hybrid path with per-hop probabilities + node-by-node animation
+  4) Find escape route → Hybrid path with per-hop probabilities + red-pin animation
 
-No Run demo, no first-load auto-compare. Folium 2D only. Classical / Dijkstra
-live in Advanced (collapsed) — primary demo is Hybrid-focused.
+No Run demo, no Suggested apartment, no first-load auto-compare. Folium 2D only.
+Classical / Dijkstra live in Advanced (collapsed) — primary demo is Hybrid-focused.
 """
 
 from __future__ import annotations
@@ -89,14 +89,21 @@ CLASSICAL_ROUTE_COLOR = "#F5C542"
 DIJKSTRA_ROUTE_COLOR = "#E8EEF6"
 HAZARD_ROUTE_COLOR = "#FF4D6A"
 ORANGE_ACCENT = "#FF8A4C"
-DISRUPTION_COLOR = "#F5A623"  # amber — not purple
+DISRUPTION_COLOR = "#F5A623"  # amber — kept for optional / Advanced overlays
 FAULT_LINE_COLOR = "#FF6B4A"
-START_DOT_COLOR = "#3B82F6"
+START_DOT_COLOR = "#3B82F6"  # blue = location set (pre-route)
+AGENT_PIN_COLOR = "#E53935"  # red pin = animation agent at current node
 CANDIDATE_EDGE_COLOR = "#7EEFFF"
+CANDIDATE_EDGE_FRAC = 0.42  # cut-short dashed stubs from current node
 
 MAP_H = 820  # concrete Folium px height (avoid % → black map)
 
 ESCAPE_OPEN_SCENARIO = "quake_core"
+
+# Distant rupture — SE of Intramuros core so typical starts are not on the fault.
+# Epicenter sits on this fault axis; apartment clicks stay toward the NW core.
+DISTANT_EPI_LAT = 14.5792
+DISTANT_EPI_LON = 120.9850
 
 # Reliability: Hybrid deferred when catastrophic vs Classical or very slow.
 HYBRID_CATASTROPHIC_RATIO = 1.25
@@ -506,13 +513,13 @@ def _no_click(layer):
 
 
 def _fault_line_latlons(
-    epi_lat: float, epi_lon: float, *, half_span_deg: float = 0.012
+    epi_lat: float, epi_lon: float, *, half_span_deg: float = 0.014
 ) -> List[List[float]]:
     """
     Simple West Valley–style axis through the epicenter (NNW–SSE).
 
-    Fault line → rupture → epicenter → near-epi broken roads. Fixed geometry
-    for the Intramuros demo (not a geologic survey product).
+    Distant rupture for the Intramuros demo: epi sits on this axis SE of the
+    typical start / exit cluster (not a geologic survey product).
     """
     # Bearing ≈ 25° west of north (Manila trench / Valley Fault feel).
     dlat = half_span_deg * 0.92
@@ -549,7 +556,7 @@ def _draw_fault_line_on_map(m, epi_lat: float, epi_lon: float) -> None:
 
 
 def _draw_start_blue_dot(m, lat: float, lon: float, *, tooltip: str = "Your location") -> None:
-    """Clear blue start point (primary visual — not only a house icon)."""
+    """Blue start point after map click (pre-route location)."""
     _no_click(
         folium.CircleMarker(
             [lat, lon],
@@ -571,6 +578,62 @@ def _draw_start_blue_dot(m, lat: float, lon: float, *, tooltip: str = "Your loca
             fill=True,
             fill_color="#fff",
             fill_opacity=1.0,
+        )
+    ).add_to(m)
+
+
+def _draw_agent_red_pin(m, lat: float, lon: float, *, tooltip: str = "Agent") -> None:
+    """Red pin = animation agent at the current path node."""
+    _no_click(
+        folium.CircleMarker(
+            [lat, lon],
+            radius=16,
+            color=AGENT_PIN_COLOR,
+            weight=2,
+            fill=False,
+            opacity=0.45,
+        )
+    ).add_to(m)
+    _no_click(
+        folium.Marker(
+            [lat, lon],
+            icon=folium.Icon(color="red", icon="map-marker", prefix="glyphicon"),
+            tooltip=tooltip,
+        )
+    ).add_to(m)
+
+
+def _cut_stub_coords(
+    y0: float, x0: float, y1: float, x1: float, *, frac: float = CANDIDATE_EDGE_FRAC
+) -> List[List[float]]:
+    """Short dashed stub from current node toward a neighbor (not full edge)."""
+    f = max(0.12, min(0.85, float(frac)))
+    return [
+        [float(y0), float(x0)],
+        [float(y0) + f * (float(y1) - float(y0)), float(x0) + f * (float(x1) - float(x0))],
+    ]
+
+
+def _draw_prob_label(m, lat: float, lon: float, text: str, *, chosen: bool = False) -> None:
+    """Visible probability chip beside a candidate stub."""
+    bg = "rgba(0,229,255,0.92)" if chosen else "rgba(8,16,28,0.88)"
+    fg = "#041018" if chosen else "#E8EEF6"
+    border = HYBRID_ROUTE_COLOR if chosen else CANDIDATE_EDGE_COLOR
+    html = (
+        f'<div style="font-size:11px;font-weight:700;font-family:DM Sans,sans-serif;'
+        f'color:{fg};background:{bg};border:1px solid {border};border-radius:4px;'
+        f'padding:1px 5px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.45)">'
+        f"{text}</div>"
+    )
+    _no_click(
+        folium.Marker(
+            [lat, lon],
+            icon=folium.DivIcon(
+                html=html,
+                class_name="qr-prob-label",
+                icon_size=(56, 18),
+                icon_anchor=(28, 9),
+            ),
         )
     ).add_to(m)
 
@@ -610,77 +673,98 @@ def _draw_hybrid_path_animation(
     step: int,
 ) -> None:
     """
-    Draw Hybrid route up to ``step`` with hop probability tooltips and a
-    moving blue agent at the current node (Streamlit-safe redraw, no AntPath).
+    Stepwise Escape animation (Streamlit-safe redraw):
+
+    1. Solid cyan path for hops already chosen (0 … step−1).
+    2. At current node: red pin + short dashed candidate edges with P labels.
+    3. Highest-P candidate is highlighted; advancing solidifies that edge and
+       clears the other dashes as the pin jumps to the next node.
     """
     if not path or len(path) < 2:
         return
     step = max(0, min(int(step), len(path) - 1))
-    partial = path[: step + 1]
-    coords = [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial if n in G.nodes]
-    if len(coords) >= 2:
-        _no_click(
-            folium.PolyLine(
-                coords,
-                color=HYBRID_ROUTE_COLOR,
-                weight=6,
-                opacity=0.95,
-                tooltip="Hybrid escape path",
-            )
-        ).add_to(m)
-
-    # Chosen edges with probability labels (midpoint markers).
     trace = step_trace or []
-    for i in range(min(step, len(trace))):
-        entry = trace[i] if i < len(trace) else {}
-        u, v = path[i], path[i + 1]
-        if u not in G.nodes or v not in G.nodes:
-            continue
-        lat_m = 0.5 * (float(G.nodes[u]["y"]) + float(G.nodes[v]["y"]))
-        lon_m = 0.5 * (float(G.nodes[u]["x"]) + float(G.nodes[v]["x"]))
-        p = entry.get("prob")
-        tip = f"Hop {i + 1} · P={_fmt_prob(p)}"
-        if entry.get("mode") and entry.get("mode") != "ml":
-            tip += f" · {entry['mode']}"
-        _no_click(
-            folium.CircleMarker(
-                [lat_m, lon_m],
-                radius=3,
-                color=HYBRID_ROUTE_COLOR,
-                weight=1,
-                fill=True,
-                fill_color="#041018",
-                fill_opacity=0.9,
-                tooltip=tip,
-            )
-        ).add_to(m)
 
-    # At the live node: faint candidate next-hop edges with probs.
-    if step < len(path) - 1 and step < len(trace):
-        entry = trace[step]
+    # Committed path so far (solid) — empty at step 0 (only pin + candidates).
+    if step >= 1:
+        partial = path[: step + 1]
+        coords = [
+            [G.nodes[n]["y"], G.nodes[n]["x"]] for n in partial if n in G.nodes
+        ]
+        if len(coords) >= 2:
+            _no_click(
+                folium.PolyLine(
+                    coords,
+                    color=HYBRID_ROUTE_COLOR,
+                    weight=6,
+                    opacity=0.95,
+                    tooltip="Hybrid escape path (chosen hops)",
+                )
+            ).add_to(m)
+        # Midpoint chips on committed hops.
+        for i in range(min(step, len(trace))):
+            entry = trace[i] if i < len(trace) else {}
+            u, v = path[i], path[i + 1]
+            if u not in G.nodes or v not in G.nodes:
+                continue
+            lat_m = 0.5 * (float(G.nodes[u]["y"]) + float(G.nodes[v]["y"]))
+            lon_m = 0.5 * (float(G.nodes[u]["x"]) + float(G.nodes[v]["x"]))
+            tip = f"Hop {i + 1} · P={_fmt_prob(entry.get('prob'))}"
+            if entry.get("mode") and entry.get("mode") != "ml":
+                tip += f" · {entry['mode']}"
+            _no_click(
+                folium.CircleMarker(
+                    [lat_m, lon_m],
+                    radius=3,
+                    color=HYBRID_ROUTE_COLOR,
+                    weight=1,
+                    fill=True,
+                    fill_color="#041018",
+                    fill_opacity=0.9,
+                    tooltip=tip,
+                )
+            ).add_to(m)
+
+    # Live node: dashed candidate stubs + probability labels (cleared after hop).
+    if step < len(path) - 1:
         cur = path[step]
+        entry = trace[step] if step < len(trace) else {}
+        cands = list(entry.get("candidates") or [])
+        if not cands and step + 1 < len(path):
+            # Fallback: at least show the chosen next edge as a stub.
+            cands = [{"node": path[step + 1], "prob": entry.get("prob"), "chosen": True}]
         if cur in G.nodes:
-            for cand in (entry.get("candidates") or [])[:5]:
+            y0 = float(G.nodes[cur]["y"])
+            x0 = float(G.nodes[cur]["x"])
+            for cand in cands[:6]:
                 nb = cand.get("node")
                 if nb is None or nb not in G.nodes:
                     continue
                 chosen = bool(cand.get("chosen"))
                 p = cand.get("prob")
+                y1 = float(G.nodes[nb]["y"])
+                x1 = float(G.nodes[nb]["x"])
+                stub = _cut_stub_coords(y0, x0, y1, x1)
                 _no_click(
                     folium.PolyLine(
-                        [
-                            [G.nodes[cur]["y"], G.nodes[cur]["x"]],
-                            [G.nodes[nb]["y"], G.nodes[nb]["x"]],
-                        ],
+                        stub,
                         color=HYBRID_ROUTE_COLOR if chosen else CANDIDATE_EDGE_COLOR,
-                        weight=5 if chosen else 2,
-                        opacity=0.95 if chosen else 0.45,
-                        dash_array=None if chosen else "2 6",
-                        tooltip=f"P={_fmt_prob(p)}" + (" · chosen" if chosen else ""),
+                        weight=5 if chosen else 3,
+                        opacity=0.98 if chosen else 0.75,
+                        dash_array="2 7",
+                        tooltip=f"P={_fmt_prob(p)}" + (" · max P (chosen)" if chosen else ""),
                     )
                 ).add_to(m)
+                # Label near the tip of the stub.
+                _draw_prob_label(
+                    m,
+                    stub[1][0],
+                    stub[1][1],
+                    _fmt_prob(p),
+                    chosen=chosen,
+                )
 
-    # Moving blue agent at current path node.
+    # Red pin at current path node.
     cur_node = path[step]
     if cur_node in G.nodes:
         lat = float(G.nodes[cur_node]["y"])
@@ -690,20 +774,9 @@ def _draw_hybrid_path_animation(
             if step == 0
             else ("Exit" if step == len(path) - 1 else f"Hop {step}")
         )
-        _draw_start_blue_dot(
-            m, lat, lon, tooltip=f"Agent · {label} · node {cur_node}"
+        _draw_agent_red_pin(
+            m, lat, lon, tooltip=f"Red pin · {label} · node {cur_node}"
         )
-        # Outer pulse ring for visibility while animating.
-        _no_click(
-            folium.CircleMarker(
-                [lat, lon],
-                radius=18,
-                color=START_DOT_COLOR,
-                weight=2,
-                fill=False,
-                opacity=0.55,
-            )
-        ).add_to(m)
 
 
 def _set_epicenter(lat: float, lon: float) -> None:
@@ -827,16 +900,6 @@ def _apply_advantage_scenario(G, scenario: Dict[str, Any]) -> str:
     st.session_state["map_status"] = msg
     st.session_state["advantage_scenario_id"] = scenario.get("id")
     return msg
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Rough great-circle distance in meters (Intramuros-scale)."""
-    r = 6_371_000.0
-    p1, p2 = np.radians(lat1), np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlmb = np.radians(lon2 - lon1)
-    a = np.sin(dphi / 2.0) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2.0) ** 2
-    return float(2.0 * r * np.arcsin(np.sqrt(min(1.0, a))))
 
 
 def _nearest_exit_within(G, lat: float, lon: float, max_m: float) -> Optional[Any]:
@@ -1953,9 +2016,23 @@ def _force_judge_pin(G, scenario: Dict[str, Any]) -> Dict[str, int]:
     return flood_params
 
 
+def _frame_map_for_distant_fault(G) -> None:
+    """Center so NW starts/exits and SE distant fault both stay in view."""
+    try:
+        origin = get_graph_origin(G)
+        o_lat, o_lon = float(origin[1]), float(origin[0])
+    except Exception:
+        o_lat, o_lon = DISTANT_EPI_LAT + 0.008, DISTANT_EPI_LON - 0.008
+    st.session_state["map_center"] = [
+        0.58 * o_lat + 0.42 * DISTANT_EPI_LAT,
+        0.58 * o_lon + 0.42 * DISTANT_EPI_LON,
+    ]
+    st.session_state["map_zoom"] = 15
+
+
 def _load_fixed_scenario(G) -> str:
     """
-    Audience open: fixed epicenter + near-epi broken roads + 5 exits.
+    Audience open: distant fault + epicenter + 5 exits — no broken roads.
 
     Does NOT set start, does NOT auto-run Hybrid/Classical compare.
     User clicks the map, then presses Find escape route.
@@ -1978,64 +2055,44 @@ def _load_fixed_scenario(G) -> str:
     st.session_state.pop("dest_lon", None)
     _clear_route_results()
 
+    # No amber broken-street corridor on the audience Escape open.
+    _clear_disruption()
+    _set_epicenter(DISTANT_EPI_LAT, DISTANT_EPI_LON)
+    st.session_state["disaster_active"] = True
+    st.session_state["feed_snapshot"] = {
+        "city": "Manila · Intramuros",
+        "as_of": "demo open",
+        "scenario_id": "distant_fault",
+        "scenario_name": "Distant fault rupture",
+        "blurb": "Fault line + epicenter SE of the core — no broken-road overlay",
+        "feed": "simulated",
+        "has_disaster": True,
+        "incidents": [
+            {
+                "id": "distant_fault:0",
+                "kind": "earthquake",
+                "label": "Distant fault rupture",
+                "severity": 0.9,
+                "area_hint": "SE of Intramuros",
+            }
+        ],
+    }
+    _frame_map_for_distant_fault(G)
     sc = _judge_pinned_scenario()
-    try:
-        if sc is not None:
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
-                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
-                st.session_state["disaster_active"] = True
-            damage_params = _judge_damage_params(sc)
-            epi_ll = None
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
-                epi_ll = (float(sc["epi_lon"]), float(sc["epi_lat"]))
-            n = _set_broken_roads_near_epi(
-                G,
-                epicenter_lonlat=epi_ll,
-                seed=damage_params["seed"],
-                corridor_extra=damage_params["corridor_extra"],
-            )
-            # Re-assert epi after damage apply (feed/clear must not steal pin).
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
-                _set_epicenter(float(sc["epi_lat"]), float(sc["epi_lon"]))
-                st.session_state["disaster_active"] = True
-            # Frame map on the fixed epicenter (broken roads + exits already set).
-            if sc.get("epi_lat") is not None and sc.get("epi_lon") is not None:
-                st.session_state["map_center"] = [
-                    float(sc["epi_lat"]),
-                    float(sc["epi_lon"]),
-                ]
-                st.session_state["map_zoom"] = 15
-            elif sc.get("start_lat") is not None and sc.get("start_lon") is not None:
-                st.session_state["map_center"] = [
-                    float(sc["start_lat"]),
-                    float(sc["start_lon"]),
-                ]
-            st.session_state["fixed_scenario_id"] = sc.get("id")
-            sid = sc.get("id") or "qa_1"
-            msg = (
-                f"Fixed scenario · {sid} · epicenter + broken roads near epi "
-                f"({n} amber edges). Click the map to set your location, then "
-                f"Find escape route."
-            )
-        else:
-            lat, lon = _mild_default_epi(G)
-            _set_epicenter(lat, lon)
-            st.session_state["disaster_active"] = True
-            n = _set_broken_roads_near_epi(
-                G,
-                epicenter_lonlat=(lon, lat),
-                seed=17082,
-                corridor_extra=14,
-            )
-            st.session_state["map_center"] = [lat, lon]
-            msg = (
-                f"Epicenter + broken roads near epi ({n} amber edges). "
-                "Click the map to set your location."
-            )
-    except TrafficNotConfiguredError as exc:
-        msg = str(exc)
-        st.session_state["map_status"] = msg
-        return msg
+    if sc is not None:
+        st.session_state["fixed_scenario_id"] = sc.get("id")
+        sid = sc.get("id") or "qa_1"
+        msg = (
+            f"Distant fault · epicenter SE · {sid} exits ready "
+            "(no broken roads). Click the map to set your location, then "
+            "Find escape route."
+        )
+    else:
+        st.session_state["fixed_scenario_id"] = "distant_fault"
+        msg = (
+            "Distant fault · epicenter SE (no broken roads). "
+            "Click the map to set your location, then Find escape route."
+        )
 
     _ensure_exit_nodes(G)
     # Seed dest to first exit so map drawing has a fallback before recommend.
@@ -2312,9 +2369,9 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="qr-tag">Fault line → epicenter → broken roads near epi. '
+        '<div class="qr-tag">Distant fault → epicenter · no broken roads. '
         "Click map for a <b>blue start</b> → recommended exit → <b>Find escape route</b> "
-        "→ watch the agent hop node-by-node with next-hop probabilities."
+        "→ red pin hops with dashed candidate edges + probabilities."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2335,7 +2392,7 @@ def main():
     origin = get_graph_origin(G)
     _init_session(G, nodes, origin)
 
-    # First open: fixed epi + near-epi broken roads + 5 exits — never auto-run compare.
+    # First open: distant fault + epi + 5 exits (no broken roads) — never auto-run.
     if not st.session_state.get("_demo_autoload_done"):
         st.session_state["_demo_autoload_done"] = True
         st.session_state["_feed_autoload_done"] = True
@@ -2365,9 +2422,8 @@ def main():
     # iframe fighting overflow:hidden column height → clipped / blank map).
     n_exits_cap = len(st.session_state.get("exit_nodes") or [])
     st.caption(
-        f"Fault line → epicenter → broken roads · "
-        f"blue start / agent · cyan Hybrid hops · "
-        f"exits ({n_exits_cap or N_EVACUATE_AREAS})"
+        f"Distant fault → epicenter · blue start · red-pin hops · "
+        f"dashed candidates + P · exits ({n_exits_cap or N_EVACUATE_AREAS})"
         + (" · red rings = hazard" if _disaster_active() else "")
         + (
             " · Advanced comparison paths on"
@@ -2397,9 +2453,10 @@ def main():
             '<div class="qr-legend">'
             f'<span><i style="background:{FAULT_LINE_COLOR}"></i>Fault line</span>'
             f'<span><i style="background:{HAZARD_ROUTE_COLOR}"></i>Epicenter / hazard</span>'
-            f'<span><i style="background:{DISRUPTION_COLOR}"></i>Broken roads</span>'
-            f'<span><i style="background:{START_DOT_COLOR}"></i>Blue start / agent</span>'
-            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Hybrid path</span>'
+            f'<span><i style="background:{START_DOT_COLOR}"></i>Blue start</span>'
+            f'<span><i style="background:{AGENT_PIN_COLOR}"></i>Red pin (agent)</span>'
+            f'<span><i style="background:{CANDIDATE_EDGE_COLOR}"></i>Candidate edges + P</span>'
+            f'<span><i style="background:{HYBRID_ROUTE_COLOR}"></i>Chosen Hybrid path</span>'
             f'<span><i style="background:#F5C542"></i>Gold star = best exit</span>'
             "</div></div>",
             unsafe_allow_html=True,
@@ -2787,7 +2844,7 @@ def main():
                         toast_icon = "⚠️"
                     else:
                         toast_msg = (
-                            "Escape route ready — play the blue agent hop-by-hop."
+                            "Escape route ready — play the red-pin hop animation."
                         )
                         toast_icon = "✅"
                     try:
@@ -2915,7 +2972,7 @@ def main():
                 0,
                 _anim_max,
                 value=_cur_anim,
-                help="Blue agent moves node-by-node along the Hybrid path",
+                help="Red pin hops node-by-node; dashed candidates show next-hop P",
             )
             if int(_new_anim) != _cur_anim:
                 st.session_state["path_anim_step"] = int(_new_anim)
@@ -2959,7 +3016,7 @@ def main():
                 if 0 <= t_scrub < len(radii_for_scrub):
                     r_now = float(radii_for_scrub[t_scrub]["r_epi"])
                 st.caption(
-                    f"Hazard rings follow the agent · "
+                    f"Hazard rings follow the red pin · "
                     f"r_epi ≈ **{r_now:.3f} km** · hop {t_scrub}/{max_t}"
                 )
             else:
@@ -3178,7 +3235,7 @@ def main():
         # 1) Fault line through epicenter (under everything).
         _draw_fault_line_on_map(fg, float(epi[1]), float(epi[0]))
 
-        # 2) Soft road disruptions (amber dashed) — broken streets near epi.
+        # 2) Optional Advanced disruption overlay (audience open has none).
         disruption_coords = disruption_edge_latlons(
             G, st.session_state.get("edge_disruptions")
         )
@@ -3190,7 +3247,7 @@ def main():
                     weight=5,
                     opacity=0.9,
                     dash_array="6 8",
-                    tooltip="Broken roads near epicenter",
+                    tooltip="Road disruption (Advanced overlay)",
                 )
             ).add_to(fg)
 
