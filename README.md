@@ -345,8 +345,8 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 
 **Quantrio** (Team 5) · QC4SG — SEA Quantathon 2026  
 
-Nicole Margareth Sibal
-Rairolf Rabang
+Nicole Margareth Sibal  
+Rairolf Rabang  
 Huynh Mai Linh Nguyen
 
 ---
