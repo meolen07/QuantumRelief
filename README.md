@@ -341,7 +341,7 @@ Keep `numpy==1.26.4` before `torch==2.2.2` for Cloud ABI safety. If PennyLane in
 
 ---
 
-## Team
+## Author
 
 **Quantrio** (Team 5) · QC4SG — SEA Quantathon 2026  
 
